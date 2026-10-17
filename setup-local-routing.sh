@@ -38,6 +38,11 @@ else
 fi
 
 # ---------------------------------------------------------------- engine
+# a JDK unpacked into the home folder needs no admin rights at all
+for h in "$HOME"/.local/java/jdk-*/Contents/Home "$HOME"/.local/java/jdk-*; do
+  [ -x "$h/bin/java" ] && export JAVA_HOME="$h" && export PATH="$h/bin:$PATH" && break
+done
+
 if command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then
   ENGINE=osrm
 elif command -v java >/dev/null 2>&1; then
@@ -49,8 +54,11 @@ else
 
 You need ONE of these. Pick whichever you'd rather have on the machine.
 
-  Java  (lighter, recommended)
-    macOS:   brew install openjdk@21
+  Java  (lighter, recommended, and no admin password needed)
+    any mac: curl -L -o /tmp/jdk.tar.gz \
+               "https://api.adoptium.net/v3/binary/latest/21/ga/mac/$(uname -m | sed s/arm64/aarch64/)/jdk/hotspot/normal/eclipse" \
+             && mkdir -p ~/.local/java && tar xzf /tmp/jdk.tar.gz -C ~/.local/java
+    or:      brew install openjdk@21
     Ubuntu:  sudo apt install default-jre
     Windows: https://adoptium.net
 

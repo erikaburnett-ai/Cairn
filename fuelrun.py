@@ -31,6 +31,9 @@ from datetime import datetime, timedelta
 from pathlib import Path
 
 UA = "fuelrun/0.1 (https://github.com/ ; prototype)"
+# some public endpoints reject anything that doesn't look like a browser
+BROWSER_UA = ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
+              "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36")
 CACHE = Path(__file__).parent / "cache"
 CACHE.mkdir(exist_ok=True)
 
@@ -416,6 +419,73 @@ def p_traffic_scotland():
     return items
 
 
+# --- provider: Transport Infrastructure Ireland. GraphQL behind their live map.
+
+TII_QUERY = ("query MapFeatures($input: MapFeaturesArgs!) { mapFeaturesQuery(input: $input) "
+             "{ mapFeatures { bbox title tooltip uri __typename "
+             "features { id geometry properties type } ... on Event { priority } } "
+             "error { message type } } }")
+
+
+def p_tii_ireland():
+    """Ireland publishes no DATEX II incident feed. Its National Access Point
+    carries journey times and 2014 collision data.
+
+    Their public map at traffic.tii.ie runs on GraphQL, so this asks the same
+    question the map asks. Unofficial and undocumented, so it will break when
+    they change it. Titles carry road numbers, features carry coordinates,
+    which means both matching modes work.
+    """
+    body = json.dumps({
+        "operationName": "MapFeatures",
+        "query": TII_QUERY,
+        "variables": {"input": {
+            "north": 55.45, "south": 51.40, "east": -5.90, "west": -10.60,
+            "zoom": 11, "layerSlugs": ["roadReports"],
+            "nonClusterableUris": ["dashboard"]}},
+    })
+    out = subprocess.run(
+        ["curl", "-s", "--max-time", "45", "-A", BROWSER_UA, "-X", "POST",
+         "https://traffic.tii.ie/api/graphql",
+         "-H", "Content-Type: application/json",
+         "-H", "Origin: https://traffic.tii.ie",
+         "-H", "Referer: https://traffic.tii.ie/",
+         "-H", "Accept: application/json", "-d", body],
+        capture_output=True, text=True, timeout=70).stdout
+    try:
+        d = json.loads(out)
+    except Exception:
+        raise RuntimeError(f"TII: no JSON ({out[:60].strip()})")
+    q = (d.get("data") or {}).get("mapFeaturesQuery") or {}
+    if q.get("error"):
+        raise RuntimeError(f"TII: {str(q['error'])[:70]}")
+
+    items = []
+    for f in q.get("mapFeatures") or []:
+        if f.get("__typename") != "Event":
+            continue
+        title = (f.get("title") or f.get("tooltip") or "").strip()
+        if not title:
+            continue
+        lat = lon = None
+        for sub in f.get("features") or []:
+            g = sub.get("geometry") or {}
+            if g.get("type") == "Point" and g.get("coordinates"):
+                lon, lat = g["coordinates"][0], g["coordinates"][1]
+                break
+        if lat is None and f.get("bbox"):
+            bb = f["bbox"]
+            lon, lat = (bb[0] + bb[2]) / 2, (bb[1] + bb[3]) / 2
+        # the kind lives in the sentence, e.g. "M18/N18 northbound: Vehicle on fire."
+        tail = title.split(":", 1)[1].strip() if ":" in title else title
+        items.append(_norm("TII Ireland", title[:70], tail[:30] or "incident",
+                           "", f.get("tooltip", "")[:170], "", None, lat, lon))
+        if f.get("priority") is not None:
+            items[-1]["rank"] = min(items[-1]["rank"], 1 if f["priority"] <= 2 else 2)
+    return items
+
+
+
 # --- provider: DATEX II, the European standard. One parser, most of a continent.
 
 def p_datex2(name, url, headers=None, gzip_required=False):
@@ -651,6 +721,9 @@ PROVIDERS = [
 
     {"name": "TrafficwatchNI", "box": (54.0, 55.4, -8.2, -5.4), "match": "roads",
      "fn": p_trafficwatch_ni, "note": "scraped roadworks table"},
+
+    {"name": "TII Ireland", "box": (51.3, 55.5, -10.7, -5.8), "match": "roads",
+     "fn": p_tii_ireland, "note": "GraphQL behind their public map, undocumented"},
 
     {"name": "Netherlands", "box": (50.7, 53.6, 3.3, 7.3), "match": "coords",
      "fn": lambda: p_datex2_bulk("Netherlands",
