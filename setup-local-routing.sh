@@ -6,7 +6,7 @@
 #   Java present    -> GraphHopper (one JAR, no Docker needed)
 #   Neither         -> tells you what to install and stops
 #
-# Afterwards:  python3 fuelrun.py --osrm http://localhost:5000 --offline ...
+# Afterwards:  python3 fuelrun.py --osrm http://localhost:8989 --offline ...
 set -euo pipefail
 
 REGION="${1:-scotland}"            # scotland | great-britain
@@ -15,9 +15,12 @@ mkdir -p "$DIR"
 cd "$DIR"
 
 case "$REGION" in
-  scotland)      URL="https://download.geofabrik.de/europe/great-britain/scotland-latest.osm.pbf" ;;
+  scotland)      URL="https://download.geofabrik.de/europe/united-kingdom/scotland-latest.osm.pbf" ;;
+  england)       URL="https://download.geofabrik.de/europe/united-kingdom/england-latest.osm.pbf" ;;
+  wales)         URL="https://download.geofabrik.de/europe/united-kingdom/wales-latest.osm.pbf" ;;
+  ireland)       URL="https://download.geofabrik.de/europe/ireland-and-northern-ireland-latest.osm.pbf" ;;
   great-britain) URL="https://download.geofabrik.de/europe/great-britain-latest.osm.pbf" ;;
-  *) echo "Usage: $0 [scotland|great-britain]"; exit 1 ;;
+  *) echo "Usage: $0 [scotland|england|wales|ireland|great-britain]"; exit 1 ;;
 esac
 PBF="$(basename "$URL")"
 
@@ -32,7 +35,12 @@ if [ -f "$PBF" ]; then
   echo "[1/3] Map data already here ($(du -h "$PBF" | cut -f1))."
 else
   echo "[1/3] Downloading map data. Great Britain is about 2.2 GB, Scotland far less."
-  curl -L --progress-bar -o "$PBF.part" "$URL"
+  curl -L --fail --progress-bar -o "$PBF.part" "$URL" || {
+    echo "      Download failed. Check the region name."; rm -f "$PBF.part"; exit 1; }
+  if [ "$(wc -c < "$PBF.part")" -lt 1000000 ]; then
+    echo "      That is not a map file. Geofabrik returned:"; head -c 200 "$PBF.part"; echo
+    rm -f "$PBF.part"; exit 1
+  fi
   mv "$PBF.part" "$PBF"
   echo "      Got $(du -h "$PBF" | cut -f1)."
 fi
@@ -82,7 +90,7 @@ if [ "$ENGINE" = "osrm" ]; then
     docker run --rm -v "$DIR:/data" osrm/osrm-backend osrm-partition "/data/$BASE.osrm"
     docker run --rm -v "$DIR:/data" osrm/osrm-backend osrm-customize "/data/$BASE.osrm"
   fi
-  echo "[3/3] Starting OSRM on http://localhost:5000"
+  echo "[3/3] Starting OSRM on http://localhost:8989"
   echo "      Leave this window open. Ctrl-C to stop."
   exec docker run --rm -t -i -p 5000:5000 -v "$DIR:/data" osrm/osrm-backend \
     osrm-routed --algorithm mld "/data/$BASE.osrm"
@@ -101,24 +109,26 @@ if [ "$ENGINE" = "graphhopper" ]; then
 graphhopper:
   datareader.file: $PBF
   graph.location: graph-cache
+  # GraphHopper 10 refuses to start without this one
+  import.osm.ignored_highways: footway, cycleway, path, pedestrian, steps
+  graph.encoded_values: car_access, car_average_speed, road_access, road_class, road_environment, max_speed, toll, hazmat
   profiles:
     - name: car
-      vehicle: car
-      weighting: fastest
-  profiles_ch:
-    - profile: car
+      custom_model_files: [car.json]
+  # No contraction hierarchies: blocking an area needs a flexible query, and
+  # ch.disable only works when the profile was not CH-prepared.
 server:
   application_connectors:
     - type: http
-      port: 5000
+      port: 8989
       bind_host: 127.0.0.1
   admin_connectors:
     - type: http
-      port: 5001
+      port: 8990
       bind_host: 127.0.0.1
 YML
   fi
-  echo "[3/3] Starting GraphHopper on http://localhost:5000"
+  echo "[3/3] Starting GraphHopper on http://localhost:8989"
   echo "      First run builds a routing graph and takes several minutes."
   echo "      Leave this window open. Ctrl-C to stop."
   exec java -Xmx4g -jar "$JAR" server config.yml

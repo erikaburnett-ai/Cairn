@@ -100,7 +100,7 @@ python3 fuelrun.py --from "Flagstaff, Arizona" --to "Las Vegas" \
 
 # route around live closures, on your own engine
 python3 fuelrun.py --from "G1 1AB" --to "LL55 4NY" --fuel 85 \
-    --gh http://localhost:5000
+    --gh http://localhost:8989
 
 # a page for your phone
 python3 fuelrun.py --from "G1 1AB" --to "KW14 8AA" --fuel 60 --out plan.html
@@ -188,7 +188,7 @@ and both can be removed:
 For a box at home. Polls on your own network, answers your phone over your own VPN.
 
 ```bash
-python3 fuelrun-serve.py --bind 0.0.0.0 --osrm http://localhost:5000
+python3 fuelrun-serve.py --bind 0.0.0.0 --osrm http://localhost:8989
 ```
 
 | Endpoint | |

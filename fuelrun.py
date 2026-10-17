@@ -1378,7 +1378,7 @@ def main():
     p.add_argument("--verify", action="store_true",
                    help="second-source every stop against OpenStreetMap")
     p.add_argument("--gh", default=None,
-                   help="GraphHopper URL for live rerouting, e.g. http://localhost:5000")
+                   help="GraphHopper URL for live rerouting, e.g. http://localhost:8989")
     args = p.parse_args()
     OSRM_BASE = args.osrm.rstrip("/")
 
@@ -1486,9 +1486,15 @@ def main():
         print(f"\n  CROSS-CHECK: {plan['verify']}")
 
     if plan.get("reroute"):
-        print(f"\n  REROUTED around {plan['reroute']['blocked']} closure(s).")
-        print(f"     The diversion costs {plan.get('diversion_cost', 0):.0f} extra miles,")
-        print(f"     and the fuel plan above already accounts for it.")
+        n = plan["reroute"]["blocked"]
+        cost = plan.get("diversion_cost", 0)
+        if cost >= 0.5:
+            print(f"\n  REROUTED around {n} closure(s).")
+            print(f"     The diversion costs {cost:.0f} extra miles, and the fuel")
+            print(f"     plan above already accounts for them.")
+        else:
+            print(f"\n  {n} closure(s) on your roads, and a route exists around them")
+            print(f"     at no extra distance. Your journey is unaffected.")
     elif plan["blocked"]:
         print("\n  !! A closure or roadworks is live on your route.")
         if plan["located"]:
@@ -1498,7 +1504,7 @@ def main():
         if plan.get("reroute_error"):
             print(f"     Rerouting failed: {plan['reroute_error']}")
         elif not o.gh:
-            print("     Pass --gh http://localhost:5000 to route around them.")
+            print("     Pass --gh http://localhost:8989 to route around them.")
         print("     Otherwise use --detour 40 to test the fuel plan by hand.")
 
     if o.out:
