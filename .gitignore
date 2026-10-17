@@ -1,0 +1,23 @@
+# Downloaded data and anything that reveals where someone has been.
+# cache/ holds route coordinates, geocoded place names, the postcode file
+# and the forecourt dataset. None of it belongs in a public repository.
+cache/
+local-routing/
+
+# Generated output
+plan.html
+*.osm.pbf
+*.jar
+graph-cache/
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Editors and OS
+.DS_Store
+.idea/
+.vscode/
+*.swp
