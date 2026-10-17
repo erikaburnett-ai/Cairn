@@ -572,6 +572,66 @@ def p_trafficwatch_ni():
     return out
 
 
+def p_datex2_bulk(name, url, max_age_hours=6, gzipped=True):
+    """DATEX II feeds too big to hold in memory.
+
+    The Dutch national feed is 213 MB decompressed and carries 62,550 records,
+    most of them roadworks planned months ahead. Streamed with iterparse,
+    filtered to whatever is live now, and the extract cached as JSON so later
+    runs cost nothing.
+    """
+    import gzip, io
+    import xml.etree.ElementTree as ET
+    from datetime import timezone
+
+    slug = re.sub(r"[^a-z0-9]+", "_", name.lower())
+    parsed = CACHE / f"bulk_{slug}.json"
+    if parsed.exists() and (time.time() - parsed.stat().st_mtime) < max_age_hours * 3600:
+        return [{**d, "roads": set(d.get("roads") or [])} for d in json.loads(parsed.read_text())]
+
+    blob = CACHE / f"bulk_{slug}.raw"
+    if not (blob.exists() and (time.time() - blob.stat().st_mtime) < max_age_hours * 3600):
+        r = subprocess.run(["curl", "-sL", "--max-time", "300", "-A", UA, "-o", str(blob), url],
+                           capture_output=True, timeout=360)
+        if r.returncode or not blob.exists() or blob.stat().st_size < 1000:
+            raise RuntimeError(f"{name}: download failed")
+
+    raw = blob.read_bytes()
+    if gzipped or raw[:2] == b"\x1f\x8b":
+        raw = gzip.decompress(raw)
+
+    strip = lambda tag: tag.rsplit("}", 1)[-1]
+    now = datetime.now(timezone.utc)
+    out = []
+    for _, el in ET.iterparse(io.BytesIO(raw), events=("end",)):
+        if strip(el.tag) != "situationRecord":
+            continue
+        g = lambda nm: next((e.text.strip() for e in el.iter()
+                             if strip(e.tag) == nm and e.text and e.text.strip()), "")
+        end, start = g("overallEndTime"), g("overallStartTime")
+        try:
+            if end and datetime.fromisoformat(end.replace("Z", "+00:00")) < now:
+                el.clear(); continue
+            if start and datetime.fromisoformat(start.replace("Z", "+00:00")) > now:
+                el.clear(); continue      # planned for later, not live
+        except ValueError:
+            pass
+        lat, lon = g("latitude"), g("longitude")
+        if not lat:
+            el.clear(); continue
+        kind = (g("causeType") or g("roadOrCarriagewayOrLaneManagementType")
+                or g("obstructionType") or "incident")
+        desc = g("generalPublicComment") or g("value") or ""
+        out.append(_norm(name, (g("roadName") or desc or kind)[:60], kind,
+                         g("directionBound"), desc, g("overallStartTime")[:16],
+                         None, float(lat), float(lon)))
+        el.clear()
+
+    parsed.write_text(json.dumps([{**d, "roads": sorted(d["roads"])} for d in out]))
+    return out
+
+
+
 # --- registry: which provider covers which patch of the map
 #
 # "match" says how an incident gets tied to your route:
@@ -591,6 +651,11 @@ PROVIDERS = [
 
     {"name": "TrafficwatchNI", "box": (54.0, 55.4, -8.2, -5.4), "match": "roads",
      "fn": p_trafficwatch_ni, "note": "scraped roadworks table"},
+
+    {"name": "Netherlands", "box": (50.7, 53.6, 3.3, 7.3), "match": "coords",
+     "fn": lambda: p_datex2_bulk("Netherlands",
+         "https://opendata.ndw.nu/planningsfeed_wegwerkzaamheden_en_evenementen.xml.gz"),
+     "note": "NDW open data, no key, 60k records streamed and filtered"},
 
     {"name": "Finland", "box": (59.5, 70.1, 19.0, 31.6), "match": "all",
      "fn": lambda: p_datex2("Finland",
@@ -621,6 +686,9 @@ def providers_for(coords):
 
 
 def incidents_on_route(route_roads, coords, corridor_miles=4.0):
+    """corridor_miles applies to road-number feeds. Coordinate feeds use a
+    much tighter one, because countries that map every municipal pavement
+    will otherwise bury the motorway closure you actually care about."""
     """Tie incidents to this route, by whatever the feed gives us."""
     provs = providers_for(coords)
     if not provs:
@@ -639,8 +707,9 @@ def incidents_on_route(route_roads, coords, corridor_miles=4.0):
         mode = pr.get("match", "roads")
         for i in found:
             if i["lat"] is not None and i["lon"] is not None:
+                limit = 0.4 if mode == "coords" else corridor_miles
                 d = min(haversine_miles((i["lat"], i["lon"]), c) for c in thin)
-                if d <= corridor_miles:
+                if d <= limit:
                     hits.append({**i, "why": f"{d:.1f} mi from your route"})
             elif i["roads"] & route_roads:
                 hits.append({**i, "why": "on " + ",".join(sorted(i["roads"] & route_roads))})
@@ -648,6 +717,10 @@ def incidents_on_route(route_roads, coords, corridor_miles=4.0):
                 hits.append({**i, "why": f"somewhere in {pr['name']}, feed gives no location"})
 
     hits.sort(key=lambda i: (i["rank"], "somewhere in" in i.get("why", "")))
+    if len(hits) > 40:
+        note = f"{len(hits) - 40} further minor items not shown"
+        hits = hits[:40]
+        problems.append(note)
     return hits, ("; ".join(problems) if problems and not hits else None)
 
 
