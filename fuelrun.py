@@ -1103,6 +1103,25 @@ def write_plan(path, plan):
                 tol.append(f"<li><b>{s['name']}</b> is 24 hours. Late doesn't matter.</li>")
         late = ("<h2>If you're running late</h2><ul class='late'>" + "".join(tol) + "</ul>") if tol else ""
 
+    warn_block = ""
+    if plan.get("incident_error"):
+        ws = "".join(f"<li>{w}</li>" for w in plan["incident_error"].split("; "))
+        warn_block = f"<h2>Trust this less</h2><ul class='late'>{ws}</ul>"
+
+    rr = ""
+    if plan.get("reroute"):
+        cost = plan.get("diversion_cost", 0)
+        if cost >= 0.5:
+            rr = (f"<div class='warn'><b>Rerouted around "
+                  f"{plan['reroute']['blocked']} closure(s).</b> The diversion adds "
+                  f"{cost:.0f} miles, and the fuel plan here already counts them.</div>")
+        else:
+            rr = (f"<div class='warn'><b>{plan['reroute']['blocked']} closure(s) on your "
+                  f"roads.</b> A way round exists at no extra distance.</div>")
+    elif plan.get("blocked"):
+        rr = ("<div class='warn'><b>A closure is live on your route.</b> "
+              "No rerouting engine was available, so these miles assume no diversion.</div>")
+
     inc = ""
     if hits:
         rows = "".join(f"<li><b>{i['type']}</b> &middot; {i['title']}<br><small>{i['direction']}"
@@ -1143,6 +1162,7 @@ font-size:15px;margin-bottom:12px}}
 <div class="sub">{total_miles:.0f} miles &middot; leave {depart:%a %d %b %H:%M} &middot; arrive about {arrive:%H:%M}<br>
 {args.fuel:.0f}% of {args.tank:.0f}{vol} gives you {range_miles:.0f} miles</div>
 {'<div class="big"><div class="t">The plan</div><div class="v">' + pick['name'] + '</div>mile ' + f"{pick['along']:.0f}" + ', about ' + f"{pick['eta']:%H:%M}" + '</div>' if pick else '<div class="big" style="border-left-color:#8c2f2f"><div class="t">The plan</div><div class="v">Fuel before you leave</div>Nothing confirmed open within range.</div>'}
+{rr}
 {late}
 <h2>Every stop in range</h2>
 {"".join(card(s) for s in scored[:14])}
