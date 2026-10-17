@@ -164,9 +164,20 @@ def route(a, b, offline=False):
                 ref = ref.strip().upper()
                 if re.fullmatch(r"[AMB]\d{1,4}\(?M?\)?", ref):
                     roads.add(ref)
+    idx = {}
+    for leg in r.get("legs", []):
+        for st in leg.get("steps", []):
+            geo = (st.get("geometry") or {}).get("coordinates") or []
+            pts = [[round(c[1], 5), round(c[0], 5)] for c in geo[::3]]
+            if not pts:
+                continue
+            for ref in (st.get("ref") or "").split(";"):
+                ref = ref.strip().upper()
+                if re.fullmatch(r"[AMB]\d{1,4}\(?M?\)?", ref):
+                    idx.setdefault(ref, []).extend(pts)
     out = {"miles": r["distance"] * MILES_PER_METRE,
            "hours": r["duration"] / 3600,
-           "coords": coords, "roads": roads}
+           "coords": coords, "roads": roads, "road_points": idx}
     ck.write_text(json.dumps({**out, "roads": sorted(roads)}))
     if "localhost" not in OSRM_BASE and "127.0.0.1" not in OSRM_BASE:
         LEAKED.append(f"OSRM          <- {a['lat']:.3f},{a['lon']:.3f} to {b['lat']:.3f},{b['lon']:.3f}")
@@ -225,15 +236,144 @@ def fuel_near_route(coords, radius_m=3000):
     return stations
 
 
+# ----------------------------------------------------------------- locating a closure
+
+def route_points_on(road, steps_index):
+    """Every coordinate on our route that belongs to a given road number."""
+    return steps_index.get(road.upper(), [])
+
+
+def build_steps_index(r):
+    """road number -> the coordinates of our route that run along it."""
+    return {k: [tuple(p) for p in v] for k, v in (r.get("road_points") or {}).items()}
+
+
+
+def junction_index(route_coords, road_points):
+    """(road, junction number) -> coordinates, from OpenStreetMap.
+
+    English closures are almost always written as "M6 J12" or "M6 between
+    J37 and J38". OSM tags motorway junctions with their number, so one
+    query along the route turns those into places on the map.
+    """
+    key = CACHE / f"junc_{abs(hash(str(route_coords[::40]))) % (10**12)}.json"
+    if key.exists():
+        return {tuple(k.split("|")): tuple(v) for k, v in json.loads(key.read_text()).items()}
+
+    step = max(1, len(route_coords) // 70)
+    poly = ",".join(f"{a:.4f},{b:.4f}" for a, b in route_coords[::step])
+    q = (f'[out:json][timeout:60];node["highway"="motorway_junction"]'
+         f'["ref"](around:2500,{poly});out body;')
+    try:
+        res = get("https://overpass-api.de/api/interpreter?"
+                  + urllib.parse.urlencode({"data": q}), tries=3, pause=4)
+    except Exception:
+        return {}
+
+    idx = {}
+    for e in res.get("elements", []):
+        ref = (e.get("tags", {}).get("ref") or "").strip().upper()
+        if not ref:
+            continue
+        here = (e["lat"], e["lon"])
+        # which of our roads does this junction sit on?
+        best_road, best_d = None, 1.2
+        for road, pts in road_points.items():
+            d = min((haversine_miles(here, pt) for pt in pts[::4]), default=99)
+            if d < best_d:
+                best_road, best_d = road, d
+        if best_road:
+            idx[(best_road, ref)] = here
+    key.write_text(json.dumps({f"{k[0]}|{k[1]}": list(v) for k, v in idx.items()}))
+    return idx
+
+
+def locate_closure(inc, steps_index, route_coords, junctions=None):
+    """Work out where on our route a closure actually bites.
+
+    Feeds rarely say. Tried in order, best first:
+      1. coordinates in the feed
+      2. junction references, e.g. "between A47 and A605", matched against
+         the points where our own route touches those roads
+      3. a place name, geocoded and then snapped to the route
+    Returns (lat, lon, how) or None, and None is reported honestly.
+    """
+    if inc.get("lat") is not None and inc.get("lon") is not None:
+        return inc["lat"], inc["lon"], "feed gave coordinates"
+
+    text = f"{inc.get('title','')} {inc.get('desc','')}"
+    mine = {r for r in inc.get("roads", set()) if r in steps_index}
+    if not mine:
+        return None
+    road = sorted(mine)[0]
+
+    # 1b. junction numbers, which is how England writes nearly everything
+    if junctions:
+        js = re.findall(r"\b(?:J|JUNCTION\s*)(\d{1,2}[A-Z]?)\b", text.upper())
+        pts = [junctions[(road, j)] for j in js if (road, j) in junctions]
+        if pts:
+            lat = sum(q[0] for q in pts) / len(pts)
+            lon = sum(q[1] for q in pts) / len(pts)
+            label = "J" + ", J".join(js[:2])
+            return lat, lon, f"{road} at {label}"
+
+    # 2. junctions: the closure names other roads, and our route meets them
+    others = {x.upper() for x in re.findall(r"\b([AMB]\d{1,4}\(?M?\)?)\b", text.upper())}
+    others -= inc.get("roads", set())
+    anchors = []
+    for o in others:
+        if o in steps_index:
+            here = set(map(tuple, steps_index[o]))
+            for pt in steps_index[next(iter(mine))]:
+                if any(haversine_miles(pt, h) < 0.6 for h in list(here)[::9]):
+                    anchors.append(pt)
+                    break
+    if anchors:
+        lat = sum(a[0] for a in anchors) / len(anchors)
+        lon = sum(a[1] for a in anchors) / len(anchors)
+        return lat, lon, f"where your route meets {', '.join(sorted(others))[:24]}"
+
+    # 3. a place name, then snap it to the nearest point of our road
+    place = re.sub(r"\b[AMB]\d{1,4}\(?M?\)?\b", " ", inc.get("title", ""))
+    place = re.sub(r"\b(J\d+\w*|Junction|northbound|southbound|eastbound|westbound|"
+                   r"slip|on|off|exit|access|between|and|to|the)\b", " ", place, flags=re.I)
+    place = re.sub(r"[^\w\s'-]", " ", place)
+    place = re.sub(r"\s+", " ", place).strip()
+    if len(place) < 4:
+        return None
+    try:
+        hit = resolve(place + ", UK")
+    except SystemExit:
+        return None
+    except Exception:
+        return None
+    pts = steps_index[next(iter(mine))]
+    best = min(pts, key=lambda c: haversine_miles((hit["lat"], hit["lon"]), c))
+    if haversine_miles((hit["lat"], hit["lon"]), best) > 12:
+        return None
+    return best[0], best[1], f"geocoded '{place[:22]}' onto your route"
+
+
+
 # ----------------------------------------------------------------- closures: pluggable by country
 
-SEVERITY = {"closure": 0, "closed": 0, "accident": 1, "roadworks": 1,
-            "obstruction": 1, "hazard": 2, "queue": 3, "congestion": 3}
+# Ordered, most specific first. A lane closure is a delay; a road closure is a
+# wall. Matching "closure" loosely called 145 Northern Irish lane closures
+# blockages, which would have sent people on diversions they did not need.
+SEVERITY = [
+    ("lane closure", 2), ("footway closure", 3), ("lanes closed", 2),
+    ("road closure", 0), ("roadclosed", 0), ("carriagewayclosed", 0),
+    ("closure", 0), ("closed", 0),
+    ("accident", 1), ("collision", 1), ("obstruction", 1), ("vehicle fire", 1),
+    ("roadworks", 1), ("maintenanceworks", 1), ("maintenance", 1), ("repair", 1),
+    ("contraflow", 2), ("hazard", 2), ("authorityoperation", 2), ("weather", 2),
+    ("abnormaltraffic", 3), ("queue", 3), ("congestion", 3), ("delay", 3),
+]
 
 
 def _rank(kind):
-    k = (kind or "").lower()
-    for word, n in SEVERITY.items():
+    k = re.sub(r"[^a-z ]", "", (kind or "").lower())
+    for word, n in SEVERITY:
         if word in k:
             return n
     return 4
@@ -427,7 +567,8 @@ def p_trafficwatch_ni():
         out.append(_norm("TrafficwatchNI", head[:70], kind, "",
                          f"{loc}. {desc}".strip(". ")[:170], "",
                          None if "severity" in sev else None))
-        out[-1]["rank"] = {"high": 0, "medium": 1, "low": 2}.get(sev, 2) if kind.endswith("closure") else _rank(kind)
+        if kind == "road closure" and sev == "low":
+            out[-1]["rank"] = 1   # a low-severity full closure is still serious
     return out
 
 
@@ -826,18 +967,81 @@ Opening hours change. Ring ahead when it matters.</div>
     return path
 
 
+# ----------------------------------------------------------------- rerouting
+
+def closure_areas(points, radius_miles=0.45):
+    """GeoJSON squares around each closure, for GraphHopper to refuse to enter."""
+    feats = {}
+    for n, (lat, lon) in enumerate(points):
+        dlat = radius_miles / 69.0
+        dlon = radius_miles / (69.0 * max(0.2, math.cos(math.radians(lat))))
+        ring = [[lon - dlon, lat - dlat], [lon + dlon, lat - dlat],
+                [lon + dlon, lat + dlat], [lon - dlon, lat + dlat],
+                [lon - dlon, lat - dlat]]
+        feats[f"shut{n}"] = {"type": "Feature", "id": f"shut{n}", "properties": {},
+                             "geometry": {"type": "Polygon", "coordinates": [ring]}}
+    return feats
+
+
+def reroute_avoiding(a, b, points, gh_url, profile="car"):
+    """Ask GraphHopper for a route that physically cannot enter the closures.
+
+    Custom models go in the body of a POST and areas are GeoJSON polygons.
+    Multiplying priority by zero inside an area removes it from the graph,
+    so the answer genuinely avoids the closure instead of preferring not to.
+
+    Needs a GraphHopper on your own machine. See setup-local-routing.sh.
+    """
+    if not points:
+        return None
+    areas = closure_areas(points)
+    body = {
+        "points": [[a["lon"], a["lat"]], [b["lon"], b["lat"]]],
+        "profile": profile,
+        "points_encoded": False,
+        "instructions": True,
+        "ch.disable": True,
+        "custom_model": {
+            "priority": [{"if": f"in_{k}", "multiply_by": "0"} for k in areas],
+            "areas": {"type": "FeatureCollection", "features": list(areas.values())},
+        },
+    }
+    out = subprocess.run(
+        ["curl", "-sL", "--max-time", "60", "-A", UA, "-X", "POST",
+         "-H", "Content-Type: application/json", "-d", json.dumps(body),
+         f"{gh_url.rstrip('/')}/route"],
+        capture_output=True, text=True, timeout=90).stdout
+    try:
+        d = json.loads(out)
+    except Exception:
+        raise RuntimeError(f"routing engine gave no JSON ({out[:70].strip()})")
+    if d.get("message"):
+        raise RuntimeError(d["message"][:90])
+    paths = d.get("paths") or []
+    if not paths:
+        raise RuntimeError("no route avoids those closures")
+    pth = paths[0]
+    coords = [(c[1], c[0]) for c in pth["points"]["coordinates"]]
+    return {"miles": pth["distance"] * MILES_PER_METRE,
+            "hours": pth["time"] / 3600000.0,
+            "coords": coords,
+            "blocked": len(points)}
+
+
+
 # ----------------------------------------------------------------- the plan
 
 class Opts:
     """Plain options bag so the CLI and the server can share one code path."""
     def __init__(self, origin, dest, tank=55, mpg=42, fuel=50, reserve=10,
                  depart=None, detour=0.0, units="uk", offline=False, out=None,
-                 verify=False):
+                 verify=False, gh=None):
         self.origin, self.dest = origin, dest
         self.tank, self.mpg, self.fuel, self.reserve = float(tank), float(mpg), float(fuel), float(reserve)
         self.depart = depart
         self.detour, self.units, self.offline, self.out = float(detour), units, offline, out
         self.verify = verify
+        self.gh = gh
 
 
 def build_plan(o):
@@ -868,6 +1072,35 @@ def build_plan(o):
     hits, err = incidents_on_route(plan["roads"], r["coords"])
     plan["hits"], plan["incident_error"] = hits or [], err
     plan["blocked"] = any(i["rank"] <= 1 for i in (hits or []))
+
+    # locate the serious ones, then route around them if an engine is available
+    plan["located"], plan["reroute"], plan["reroute_error"] = [], None, None
+    serious = [i for i in plan["hits"] if i["rank"] <= 1]
+    if serious:
+        idx = build_steps_index(r)
+        jn = junction_index(r["coords"], idx) if idx else {}
+        for i in serious:
+            got = locate_closure(i, idx, r["coords"], jn)
+            if got:
+                i["where"] = got[2]
+                plan["located"].append((got[0], got[1]))
+        if plan["located"] and o.gh:
+            try:
+                plan["reroute"] = reroute_avoiding(a, b, plan["located"], o.gh)
+            except Exception as e:
+                plan["reroute_error"] = str(e)[:90]
+
+    # a real diversion replaces the guessed one
+    if plan["reroute"]:
+        extra = plan["reroute"]["miles"] - r["miles"]
+        if extra > 0.5:
+            total_miles = plan["reroute"]["miles"]
+            total_hours = plan["reroute"]["hours"]
+            plan.update({"total_miles": total_miles, "total_hours": total_hours,
+                         "arrive": depart + timedelta(hours=total_hours),
+                         "makes_it": range_miles >= total_miles,
+                         "spare": range_miles - total_miles,
+                         "diversion_cost": extra})
 
     if plan["makes_it"]:
         return plan
@@ -998,11 +1231,13 @@ def main():
     p.add_argument("--json", action="store_true", help="machine-readable output")
     p.add_argument("--verify", action="store_true",
                    help="second-source every stop against OpenStreetMap")
+    p.add_argument("--gh", default=None,
+                   help="GraphHopper URL for live rerouting, e.g. http://localhost:5000")
     args = p.parse_args()
     OSRM_BASE = args.osrm.rstrip("/")
 
     o = Opts(args.origin, args.dest, args.tank, args.mpg, args.fuel, args.reserve,
-             args.depart, args.detour, args.units, args.offline, args.out, args.verify)
+             args.depart, args.detour, args.units, args.offline, args.out, args.verify, args.gh)
     print("\nWorking...", file=sys.stderr)
     plan = build_plan(o)
 
@@ -1104,10 +1339,21 @@ def main():
     if plan.get("verify"):
         print(f"\n  CROSS-CHECK: {plan['verify']}")
 
-    if plan["blocked"]:
+    if plan.get("reroute"):
+        print(f"\n  REROUTED around {plan['reroute']['blocked']} closure(s).")
+        print(f"     The diversion costs {plan.get('diversion_cost', 0):.0f} extra miles,")
+        print(f"     and the fuel plan above already accounts for it.")
+    elif plan["blocked"]:
         print("\n  !! A closure or roadworks is live on your route.")
-        print("     Any diversion adds miles and this fuel plan assumes none.")
-        print("     Re-run with --detour 40 to see whether the plan still holds.")
+        if plan["located"]:
+            print(f"     {len(plan['located'])} of them pinned to a point on your road:")
+            for i in [x for x in plan["hits"] if x.get("where")][:3]:
+                print(f"       {i['where']}")
+        if plan.get("reroute_error"):
+            print(f"     Rerouting failed: {plan['reroute_error']}")
+        elif not o.gh:
+            print("     Pass --gh http://localhost:5000 to route around them.")
+        print("     Otherwise use --detour 40 to test the fuel plan by hand.")
 
     if o.out:
         write_plan(o.out, plan)
