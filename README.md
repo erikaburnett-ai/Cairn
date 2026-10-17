@@ -105,7 +105,26 @@ python3 fuelrun.py --from "G1 1AB" --to "KW14 8AA" --fuel 60 --offline --privacy
 | `--offline` | refuse any request that would reveal your destination |
 | `--privacy` | report exactly what left the machine |
 | `--out` | write the offline phone page |
+| `--verify` | second-source every stop against OpenStreetMap |
 | `--json` | machine-readable output |
+
+## Verifying a stop
+
+`--verify` cross-references every recommended stop against OpenStreetMap.
+
+```
+PLAN: fill at Brora Fuel Express Automat, mile 57, around 13:02.
+      Confirmed by two independent datasets.
+
+CROSS-CHECK: 10 of 14 confirmed by OpenStreetMap as well. 10 place(s) OSM lists
+are absent from the statutory register and may have closed: Bannerman, Edgemoor
+Filling Station, Gleaner, Morrisons
+```
+
+Every forecourt in Great Britain is legally required to be in the statutory
+register. A place OpenStreetMap lists that the register does not has very
+likely shut. On one test route, OSM was missing 29 real registered forecourts
+and listed 3 that no longer appear anywhere official.
 
 ## Privacy
 

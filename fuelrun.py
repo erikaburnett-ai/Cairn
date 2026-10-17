@@ -831,11 +831,13 @@ Opening hours change. Ring ahead when it matters.</div>
 class Opts:
     """Plain options bag so the CLI and the server can share one code path."""
     def __init__(self, origin, dest, tank=55, mpg=42, fuel=50, reserve=10,
-                 depart=None, detour=0.0, units="uk", offline=False, out=None):
+                 depart=None, detour=0.0, units="uk", offline=False, out=None,
+                 verify=False):
         self.origin, self.dest = origin, dest
         self.tank, self.mpg, self.fuel, self.reserve = float(tank), float(mpg), float(fuel), float(reserve)
         self.depart = depart
         self.detour, self.units, self.offline, self.out = float(detour), units, offline, out
+        self.verify = verify
 
 
 def build_plan(o):
@@ -905,6 +907,8 @@ def build_plan(o):
                        "eta": eta, "open": is_open, "shuts": shuts})
     scored.sort(key=lambda s: -s["along"])
     plan["scored"] = scored
+    if getattr(o, "verify", False) and plan["source"] == "fuelfinder":
+        plan["verify"] = cross_check(scored, r["coords"])
 
     usable = [s for s in scored if s["open"] is True]
     if usable:
@@ -917,6 +921,36 @@ def build_plan(o):
             if best is not pick and best["prices"]["E10"] < pick["prices"].get("E10", 1e9) - 2:
                 plan["cheaper"] = (best, pick["prices"]["E10"] - best["prices"]["E10"])
     return plan
+
+
+
+def cross_check(stations, coords):
+    """Second-source every stop against OpenStreetMap.
+
+    Idea owed to a suggestion about satellite ground truth. The statutory
+    register is authoritative for Great Britain, so anything OSM has that
+    the register does not has very likely closed. Anything in both is as
+    confirmed as it gets without driving there.
+    """
+    try:
+        osm = fuel_near_route(coords, radius_m=2000)
+    except Exception as e:
+        return f"OpenStreetMap unavailable, no second source ({str(e)[:40]})"
+    near = lambda s, lst: any(
+        haversine_miles((s["lat"], s["lon"]), (o["lat"], o["lon"])) < 0.25 for o in lst)
+    both = 0
+    for s in stations:
+        if near(s, osm):
+            s["confirmed"] = True
+            both += 1
+        else:
+            s["confirmed"] = False
+    ghosts = [o["name"] for o in osm if not near(o, stations)]
+    msg = f"{both} of {len(stations)} confirmed by OpenStreetMap as well"
+    if ghosts:
+        msg += (f". {len(ghosts)} place(s) OSM lists are absent from the statutory "
+                f"register and may have closed: " + ", ".join(g[:28] for g in ghosts[:4]))
+    return msg
 
 
 def plan_json(plan):
@@ -962,11 +996,13 @@ def main():
     p.add_argument("--privacy", action="store_true")
     p.add_argument("--out", default=None, help="write a page for your phone")
     p.add_argument("--json", action="store_true", help="machine-readable output")
+    p.add_argument("--verify", action="store_true",
+                   help="second-source every stop against OpenStreetMap")
     args = p.parse_args()
     OSRM_BASE = args.osrm.rstrip("/")
 
     o = Opts(args.origin, args.dest, args.tank, args.mpg, args.fuel, args.reserve,
-             args.depart, args.detour, args.units, args.offline, args.out)
+             args.depart, args.detour, args.units, args.offline, args.out, args.verify)
     print("\nWorking...", file=sys.stderr)
     plan = build_plan(o)
 
@@ -1058,8 +1094,15 @@ def main():
             print(f"        Cheaper: {best['name']} at mile {best['along']:.0f}, {diff:.1f}p/L less.")
         if plan["later"]:
             print(f"        {plan['later']} station(s) further on are shut or unverified by then.")
+        if pick.get("confirmed") is True:
+            print("        Confirmed by two independent datasets.")
+        elif pick.get("confirmed") is False:
+            print("        Not in OpenStreetMap. Statutory register only. Ring ahead.")
     else:
         print("  PLAN: nothing confirmed open within range. Fuel before departure.")
+
+    if plan.get("verify"):
+        print(f"\n  CROSS-CHECK: {plan['verify']}")
 
     if plan["blocked"]:
         print("\n  !! A closure or roadworks is live on your route.")
