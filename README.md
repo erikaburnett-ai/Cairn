@@ -188,7 +188,7 @@ and both can be removed:
 For a box at home. Polls on your own network, answers your phone over your own VPN.
 
 ```bash
-python3 fuelrun-serve.py --bind 0.0.0.0 --osrm http://localhost:8989
+python3 fuelrun-serve.py --bind 0.0.0.0 --osrm http://localhost:8989 --gh http://localhost:8989
 ```
 
 | Endpoint | |
@@ -196,7 +196,7 @@ python3 fuelrun-serve.py --bind 0.0.0.0 --osrm http://localhost:8989
 | `/live?roads=A9,A82` | 229 bytes of plain text. Loads on one bar. |
 | `/plan?from=..&to=..&fuel=60` | JSON |
 | `/plan.html?from=..&to=..` | the offline page |
-| `/health` | uptime, poll times, provider status |
+| `/health` | uptime, poll times, per-provider health, rerouting state |
 
 Put it behind Tailscale or WireGuard. Do not expose it to the open internet.
 
@@ -249,6 +249,30 @@ and 2014 collision data. A commented entry waits in `fuelrun.py`.
 | Snapshots | the offline page states when it was made |
 | Consumption | one flat mpg figure, no hills, load, weather or speed |
 | Hours outside GB | OpenStreetMap only, and it reports `no hours recorded` |
+
+## Tests
+
+```bash
+python3 test_fuelrun.py          # logic only, no network, instant
+python3 test_fuelrun.py --live   # also hits all seven live feeds
+```
+
+41 tests. The live ones break when a source changes its format, which is what
+they are for.
+
+## Provider health
+
+A scraped page that gets redesigned does not raise an exception. It parses to
+nothing, and the tool reports no incidents, which on a safety tool is worse
+than crashing. Each provider's normal output is recorded and a collapse is
+reported loudly:
+
+```
+!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+! Traffic Wales returned nothing. It normally gives about 8.
+! Treat 'no incidents' from it as unknown until checked.
+!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+```
 
 ## Contributing
 

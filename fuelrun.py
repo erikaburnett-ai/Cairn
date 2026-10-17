@@ -393,6 +393,54 @@ def _norm(source, title, kind, direction="", desc="", since="", roads=None, lat=
             "roads": roads, "lat": lat, "lon": lon, "rank": _rank(kind)}
 
 
+# ----------------------------------------------------------------- provider health
+
+HEALTH = CACHE / "provider_health.json"
+
+
+def _health_load():
+    try:
+        return json.loads(HEALTH.read_text())
+    except Exception:
+        return {}
+
+
+def _health_record(name, count):
+    """Remember what each provider normally returns.
+
+    A scraped page that gets redesigned does not raise. It parses to nothing
+    and the tool reports no incidents, which on a safety tool is worse than
+    crashing. This keeps a rolling record of normal and complains when a
+    provider falls off a cliff.
+
+    Returns a warning string, or None.
+    """
+    h = _health_load()
+    rec = h.get(name) or {"best": 0, "runs": 0, "last": None}
+    warn = None
+    if count == 0 and rec["best"] >= 3:
+        warn = (f"{name} returned nothing. It normally gives about {rec['best']}. "
+                f"Treat 'no incidents' from it as unknown until checked.")
+    elif rec["best"] >= 20 and count < rec["best"] * 0.15:
+        warn = (f"{name} returned {count}, far below its usual {rec['best']}. "
+                f"The source may have changed.")
+    rec["best"] = max(rec["best"], count) if count else rec["best"]
+    rec["last"] = count
+    rec["runs"] = rec.get("runs", 0) + 1
+    h[name] = rec
+    try:
+        HEALTH.write_text(json.dumps(h, indent=1))
+    except Exception:
+        pass
+    return warn
+
+
+def provider_health():
+    """What each provider has been doing lately."""
+    return _health_load()
+
+
+
 # --- provider: Traffic Scotland (scraped; their DATEX II feed needs approval)
 
 def p_traffic_scotland():
@@ -775,8 +823,12 @@ def incidents_on_route(route_roads, coords, corridor_miles=4.0):
         try:
             found = pr["fn"]()
         except Exception as e:
-            problems.append(f"{pr['name']}: {str(e)[:50]}")
+            problems.append(f"{pr['name']} FAILED: {str(e)[:60]}")
+            _health_record(pr["name"], 0)
             continue
+        warn = _health_record(pr["name"], len(found))
+        if warn:
+            problems.append(warn)
         mode = pr.get("match", "roads")
         for i in found:
             if i["lat"] is not None and i["lon"] is not None:
@@ -794,7 +846,7 @@ def incidents_on_route(route_roads, coords, corridor_miles=4.0):
         note = f"{len(hits) - 40} further minor items not shown"
         hits = hits[:40]
         problems.append(note)
-    return hits, ("; ".join(problems) if problems and not hits else None)
+    return hits, ("; ".join(problems) if problems else None)
 
 
 # ----------------------------------------------------------------- Fuel Finder (UK)
@@ -1405,8 +1457,11 @@ def main():
     print(f"  That's          {plan['range_miles']:.0f} miles at {o.mpg:.0f} mpg ({o.units.upper()})")
 
     if plan["incident_error"]:
-        print(f"\n  Live incident check unavailable: {plan['incident_error'][:70]}")
-    elif plan["hits"]:
+        print("\n  " + "!" * 68)
+        for w in plan["incident_error"].split("; "):
+            print(f"  ! {w[:100]}")
+        print("  " + "!" * 68)
+    if plan["hits"]:
         print("\n" + "-" * 68)
         where = ", ".join(sorted(plan["roads"]))[:40] or "this route"
         print(f"  LIVE ON YOUR ROUTE  ({len(plan['hits'])} on {where})")
@@ -1418,7 +1473,7 @@ def main():
             print(f"              {'  |  '.join(bits)[:76]}")
             if i["desc"]:
                 print(f"              {i['desc'][:78]}")
-    else:
+    elif not plan["incident_error"]:
         print("\n  Live incidents: nothing reported on your roads right now.")
 
     if plan["makes_it"]:

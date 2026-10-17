@@ -50,6 +50,7 @@ STATE = {
     "serves": 0,
 }
 LOCK = threading.Lock()
+GH_URL = None
 
 
 # ----------------------------------------------------------------- poller
@@ -58,9 +59,15 @@ def poll_closures():
     found, problems = [], []
     for pr in fr.PROVIDERS:
         try:
-            found += pr["fn"]()
+            got = pr["fn"]()
         except Exception as e:
-            problems.append(f"{pr['name']}: {str(e)[:60]}")
+            problems.append(f"{pr['name']} FAILED: {str(e)[:60]}")
+            fr._health_record(pr["name"], 0)
+            continue
+        warn = fr._health_record(pr["name"], len(got))
+        if warn:
+            problems.append(warn)
+        found += got
     with LOCK:
         if found or not STATE["closures"]:
             STATE["closures"] = found
@@ -166,6 +173,7 @@ class H(BaseHTTPRequestHandler):
                     fuel=q.get("fuel", 50), reserve=q.get("reserve", 10),
                     depart=q.get("depart"), detour=q.get("detour", 0),
                     units=q.get("units", "uk"), offline=q.get("offline") == "1")
+        o.gh = q.get("gh") or GH_URL
         plan = fr.build_plan(o)
         if path == "/plan":
             self.send(200, json.dumps(fr.plan_json(plan), indent=1), "application/json")
@@ -188,7 +196,9 @@ class H(BaseHTTPRequestHandler):
                 "closures_error": s["closures_error"],
                 "fuel_stations": s["fuel_count"],
                 "fuel_updated": s["fuel_at"].isoformat(timespec="seconds") if s["fuel_at"] else None,
-                "providers": [p["name"] for p in fr.PROVIDERS]}
+                "rerouting": bool(GH_URL),
+                "providers": [p["name"] for p in fr.PROVIDERS],
+                "provider_health": fr.provider_health()}
 
     def status_page(self):
         h = self.health()
@@ -206,13 +216,16 @@ h1{{font-size:20px;margin:0 0 4px}} .m{{color:#9aa7b2;font-size:14px;margin-bott
 table{{border-collapse:collapse;width:100%;font-size:14px}} td{{padding:7px 8px;border-bottom:1px solid #222b33;vertical-align:top}}
 .t0{{color:#ff8080;font-weight:700}} .t1{{color:#ffc266}} .t2{{color:#ffe08a}} .t3,.t4{{color:#9aa7b2}}
 code{{background:#192027;padding:2px 6px;border-radius:4px;font-size:13px}}
-.e{{margin-top:20px;color:#9aa7b2;font-size:14px;line-height:2}}</style>
+.e{{margin-top:20px;color:#9aa7b2;font-size:14px;line-height:2}}
+.hw{{background:#3a1f1f;border-left:5px solid #ff8080;padding:10px 12px;border-radius:6px;
+margin:8px 0;font-size:14px;color:#ffd0d0}}</style>
 <h1>fuelrun</h1>
 <div class=m>up {h['uptime_seconds'] // 3600}h {(h['uptime_seconds'] % 3600) // 60}m &middot;
 {h['closures_known']} closures known &middot; {h['fuel_stations']} forecourts loaded &middot;
 {h['polls']} polls &middot; {h['requests_served']} requests<br>
 closures updated {h['closures_updated'] or 'never'}
 {'<br><b style=color:#ff8080>' + h['closures_error'] + '</b>' if h['closures_error'] else ''}</div>
+{''.join(f"<div class=hw>{n}: returning {v['last']}, normally about {v['best']}</div>" for n, v in (h.get('provider_health') or {}).items() if v.get('best', 0) >= 3 and (v.get('last') or 0) == 0)}
 <table>{rows}</table>
 <div class=e>
 <code>/live?roads=A9,A82</code> plain text for the car<br>
@@ -231,11 +244,15 @@ def main():
                     help="127.0.0.1 is local only. Use 0.0.0.0 to reach it over your VPN.")
     ap.add_argument("--closure-mins", type=float, default=4, help="how often to poll closures")
     ap.add_argument("--fuel-hours", type=float, default=6, help="how often to refresh fuel data")
-    ap.add_argument("--osrm", default=None, help="your local routing server, e.g. http://localhost:5000")
+    ap.add_argument("--osrm", default=None, help="your local routing server, e.g. http://localhost:8989")
+    ap.add_argument("--gh", default=None,
+                    help="GraphHopper URL so served plans can reroute, e.g. http://localhost:8989")
     a = ap.parse_args()
 
     if a.osrm:
         fr.OSRM_BASE = a.osrm.rstrip("/")
+    global GH_URL
+    GH_URL = a.gh
 
     print(f"fuelrun serve")
     print(f"  listening   http://{a.bind}:{a.port}")
