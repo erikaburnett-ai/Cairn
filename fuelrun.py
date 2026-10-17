@@ -26,7 +26,7 @@ Usage:
 #  License for more details: https://www.gnu.org/licenses/
 #
 
-import argparse, json, math, re, subprocess, sys, time, urllib.parse
+import argparse, hashlib, json, math, re, subprocess, sys, time, urllib.parse
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -210,7 +210,9 @@ def fuel_near_route(coords, radius_m=3000):
     step = max(1, len(coords) // 90)
     thin = coords[::step]
     poly = ",".join(f"{lat:.5f},{lon:.5f}" for lat, lon in thin)
-    cache_key = CACHE / f"fuel_{abs(hash(poly)) % (10 ** 12)}.json"
+    # hashlib, because Python randomises str.__hash__ per process and a cache
+    # key that changes every run is not a cache
+    cache_key = CACHE / f"fuel_{hashlib.sha1(poly.encode()).hexdigest()[:16]}.json"
     if cache_key.exists():
         print("  (fuel data from local cache)", file=sys.stderr)
         return json.loads(cache_key.read_text())
@@ -259,7 +261,8 @@ def junction_index(route_coords, road_points):
     J37 and J38". OSM tags motorway junctions with their number, so one
     query along the route turns those into places on the map.
     """
-    key = CACHE / f"junc_{abs(hash(str(route_coords[::40]))) % (10**12)}.json"
+    seed = str(route_coords[::40]).encode()
+    key = CACHE / f"junc_{hashlib.sha1(seed).hexdigest()[:16]}.json"
     if key.exists():
         return {tuple(k.split("|")): tuple(v) for k, v in json.loads(key.read_text()).items()}
 

@@ -213,6 +213,27 @@ class Blocking(unittest.TestCase):
         self.assertIsNone(fr.reroute_avoiding({}, {}, [], "http://localhost:1"))
 
 
+class CacheKeys(unittest.TestCase):
+    """Python randomises str.__hash__ per process. A cache key built from it
+    changes every run, so the cache silently never hits and every invocation
+    re-queries the upstream. This caught exactly that."""
+
+    def test_keys_are_stable_across_processes(self):
+        import subprocess as sp
+        code = ("import sys; sys.path.insert(0,'.'); import fuelrun as f, hashlib; "
+                "print(hashlib.sha1('abc'.encode()).hexdigest()[:16])")
+        a = sp.run([sys.executable, "-c", code], capture_output=True, text=True).stdout
+        b = sp.run([sys.executable, "-c", code], capture_output=True, text=True).stdout
+        self.assertEqual(a, b)
+        self.assertTrue(a.strip())
+
+    def test_no_builtin_hash_in_cache_keys(self):
+        src = (fr.__file__ and open(fr.__file__).read()) or ""
+        for line in src.splitlines():
+            if "CACHE /" in line and "hash(" in line and "hashlib" not in line:
+                self.fail(f"unstable cache key: {line.strip()}")
+
+
 # ----------------------------------------------------------------- live
 
 @unittest.skipUnless(LIVE, "pass --live to hit the real feeds")
