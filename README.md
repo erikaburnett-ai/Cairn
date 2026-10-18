@@ -294,7 +294,8 @@ JSON-RPC 2.0 over stdio, standard library, no Node and no SDK. Every answer
 carries `left_this_machine`, so an agent acting for somebody can report what
 the answer cost them in privacy.
 
-It also attaches as an upstream to a gateway such as ToolFunnel, which is
+It also attaches as an upstream to a gateway such as
+[ToolFunnel](https://github.com/Rendeverance/toolfunnel), which is
 worth having if you run many tools behind one policy. Cairn does not need
 one, and keeping it that way is deliberate: a dependency on a gateway would
 end the no-dependencies promise above.
