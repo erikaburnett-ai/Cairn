@@ -20,6 +20,14 @@ if LIVE:
 
 # ----------------------------------------------------------------- severity
 
+def source():
+    """The tool's own source, for the tests that check a shape of code
+    rather than a value. Opened and closed, because an unclosed handle
+    in every one of them printed a ResourceWarning under --live."""
+    with open(fr.__file__, encoding="utf-8") as fh:
+        return fh.read()
+
+
 class Severity(unittest.TestCase):
     """The bug that mattered most: 145 lane closures ranked as road closures."""
 
@@ -339,7 +347,7 @@ class CachedSeverity(unittest.TestCase):
 
     def test_rank_is_recomputed_not_trusted(self):
         import re as _re
-        src = open(fr.__file__).read()
+        src = source()
         body = src[src.index("def p_datex2_bulk"):]
         head = body[:body.index("blob = CACHE")]
         self.assertIn('"rank": _rank(', head,
@@ -352,7 +360,7 @@ class EveryExit(unittest.TestCase):
     file and said nothing, and --privacy reported nothing at all."""
 
     def test_no_return_in_main_skips_finish(self):
-        src = open(fr.__file__).read()
+        src = source()
         body = src[src.index("\ndef main():"):]
         lines = [l.strip() for l in body.splitlines()]
         for n, line in enumerate(lines):
@@ -364,7 +372,7 @@ class EveryExit(unittest.TestCase):
                             f"finish() and the json exit: {window[-90:]}")
 
     def test_finish_writes_and_reports(self):
-        src = open(fr.__file__).read()
+        src = source()
         fin = src[src.index("def finish("):src.index("def main():")]
         self.assertIn("write_plan(", fin)
         self.assertIn("LEFT THIS MACHINE", fin)
@@ -385,7 +393,7 @@ class CacheKeys(unittest.TestCase):
         self.assertTrue(a.strip())
 
     def test_no_builtin_hash_in_cache_keys(self):
-        src = (fr.__file__ and open(fr.__file__).read()) or ""
+        src = source()
         for line in src.splitlines():
             if "CACHE /" in line and "hash(" in line and "hashlib" not in line:
                 self.fail(f"unstable cache key: {line.strip()}")
@@ -464,7 +472,7 @@ class FuelCache(unittest.TestCase):
 
     def test_the_cache_expires(self):
         self.assertTrue(hasattr(fr, "FUEL_CACHE_DAYS"))
-        src = open(fr.__file__).read()
+        src = source()
         i = src.index("def fuel_near_route")
         self.assertIn("FUEL_CACHE_DAYS", src[i:i + 900],
                       "fuel_near_route caches forever")
@@ -598,7 +606,7 @@ class WhichRegister(unittest.TestCase):
     def test_a_station_from_a_register_is_not_read_with_the_osm_parser(self):
         # The test used to be the string "fuelfinder". The day France
         # arrived, 9,799 forecourts would have come back as hours unknown.
-        src = open(fr.__file__).read()
+        src = source()
         i = src.index("eta = depart + timedelta")
         self.assertIn('st.get("ff_hours")', src[i:i + 1400])
 
@@ -672,7 +680,7 @@ class CheaperThanThis(unittest.TestCase):
     def test_a_saving_is_never_negative(self):
         """It printed "-199.9c/L less" outside Lisbon, because a missing
         price defaulted to a billion in the test and to zero in the sum."""
-        src = open(fr.__file__).read()
+        src = source()
         i = src.index('plan["cheaper"]')
         window = src[i - 700:i + 200]
         self.assertNotIn('pick["prices"].get(grade, 0)', window)
@@ -759,7 +767,7 @@ class WhatTimeIsItThere(unittest.TestCase):
         self.assertEqual(fr.shift_between(noon, None, mad).hour, 12)
 
     def test_the_station_is_judged_on_its_own_clock(self):
-        src = open(fr.__file__).read()
+        src = source()
         i = src.index("eta = depart + timedelta")
         window = src[i:i + 1400]
         self.assertIn("local_eta", window)
@@ -821,14 +829,14 @@ class NoHoursAtAll(unittest.TestCase):
     advice."""
 
     def test_the_fallback_exists_and_is_labelled(self):
-        src = open(fr.__file__).read()
+        src = source()
         i = src.index('plan["unverified_hours"]')
         window = src[i:i + 900]
         self.assertIn('s["open"] is None', window)
         self.assertIn("Ring ahead", window)
 
     def test_a_station_known_shut_is_never_the_fallback(self):
-        src = open(fr.__file__).read()
+        src = source()
         i = src.index('plan["unverified_hours"] = False')
         self.assertIn('s["open"] is None', src[i:i + 400])
         self.assertNotIn('s["open"] is False', src[i:i + 400])
