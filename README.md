@@ -537,6 +537,12 @@ mistake that five countries have already caused.
 Standard library only, in both files. Read `CLA.md` and add your line to
 `CONTRIBUTORS.md` before your first pull request.
 
+## Credits
+
+Written by Erika Burnett, with Claude as a pair.
+
+Data keeps its own terms and its own credit. See the Sources table above.
+
 ## Licence
 
 GNU Affero General Public License v3.0. See `LICENSE`.
