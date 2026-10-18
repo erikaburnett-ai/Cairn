@@ -9,7 +9,7 @@
 # Afterwards:  python3 fuelrun.py --osrm http://localhost:8989 --offline ...
 set -euo pipefail
 
-REGION="${1:-scotland}"            # scotland | great-britain
+REGION="${1:-scotland}"            # scotland | england | wales | ireland | great-britain
 DIR="$(cd "$(dirname "$0")" && pwd)/local-routing"
 mkdir -p "$DIR"
 cd "$DIR"
@@ -23,6 +23,21 @@ case "$REGION" in
   *) echo "Usage: $0 [scotland|england|wales|ireland|great-britain]"; exit 1 ;;
 esac
 PBF="$(basename "$URL")"
+
+# Each region gets its own port, config and graph folder. They shared one
+# before, so building Ireland after Great Britain walked into the British
+# graph and GraphHopper refused to start with an unhelpful message. Two
+# regions can now be built once and either served on demand.
+case "$REGION" in
+  scotland)      PORT=8989 ;;
+  great-britain) PORT=8989 ;;
+  england)       PORT=8992 ;;
+  wales)         PORT=8993 ;;
+  ireland)       PORT=8991 ;;
+esac
+ADMIN=$((PORT + 1000))
+CONF="config-$REGION.yml"
+GRAPH="graph-$REGION"
 
 echo "=============================================================="
 echo " fuelrun: self-hosted routing"
@@ -104,11 +119,11 @@ if [ "$ENGINE" = "graphhopper" ]; then
     curl -L --progress-bar -o "$JAR" \
       "https://repo1.maven.org/maven2/com/graphhopper/graphhopper-web/$GH_VER/$JAR"
   fi
-  if [ ! -f config.yml ]; then
-    cat > config.yml <<YML
+  if [ ! -f "$CONF" ]; then
+    cat > "$CONF" <<YML
 graphhopper:
   datareader.file: $PBF
-  graph.location: graph-cache
+  graph.location: $GRAPH
   # GraphHopper 10 refuses to start without this one
   import.osm.ignored_highways: footway, cycleway, path, pedestrian, steps
   graph.encoded_values: car_access, car_average_speed, road_access, road_class, road_environment, max_speed, toll, hazmat
@@ -120,16 +135,23 @@ graphhopper:
 server:
   application_connectors:
     - type: http
-      port: 8989
+      port: $PORT
       bind_host: 127.0.0.1
   admin_connectors:
     - type: http
-      port: 8990
+      port: $ADMIN
       bind_host: 127.0.0.1
 YML
   fi
-  echo "[3/3] Starting GraphHopper on http://localhost:8989"
+  echo "[3/3] Starting GraphHopper on http://localhost:$PORT"
   echo "      First run builds a routing graph and takes several minutes."
   echo "      Leave this window open. Ctrl-C to stop."
-  exec java -Xmx4g -jar "$JAR" server config.yml
+  HEAP=4g
+case "$REGION" in great-britain) HEAP=8g ;; ireland) HEAP=5g ;; esac
+echo "      Heap: $HEAP"
+if [ "${IMPORT_ONLY:-}" = "1" ]; then
+  echo "      IMPORT_ONLY set: building the graph and stopping."
+  exec java -Xmx$HEAP -jar "$JAR" import "$CONF"
+fi
+exec java -Xmx$HEAP -jar "$JAR" server "$CONF"
 fi

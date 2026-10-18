@@ -50,7 +50,9 @@ forecourts.temporary_closure            forecourts.permanent_closure
 forecourts.public_phone_number          forecourts.amenities.customer_toilets
 ```
 
-8,139 forecourts. Open Government Licence v3.0. Almost nothing uses the hours.
+8,139 forecourts, Open Government Licence v3.0, free to anybody who asks for
+them, and the per-day opening hours sitting inside every one of those records
+go almost entirely unread by the apps people actually use to find fuel.
 
 Measured on one 110-mile stretch of the A9:
 
@@ -65,7 +67,8 @@ Measured on one 110-mile stretch of the A9:
 |---|---|
 | Range | works out where the tank hits your reserve |
 | Stops | every forecourt reachable before that, open at your arrival time |
-| Closures | live, matched to the road numbers your route uses |
+| Closures | live, from 13 national sources, matched to the roads you use |
+| Bank holidays | the statutory holiday timetable, per nation, where it differs |
 | Rerouting | locates a closure, blocks it, routes around it |
 | Diversion | the extra miles feed back into the fuel plan |
 | Offline | writes a page for your phone that needs no signal |
@@ -147,6 +150,22 @@ removes that ground from the graph:
 
 Needs a GraphHopper on your own machine. See `setup-local-routing.sh`.
 
+```bash
+./setup-local-routing.sh great-britain    # port 8989
+./setup-local-routing.sh ireland          # port 8991, Ireland and NI
+IMPORT_ONLY=1 ./setup-local-routing.sh ireland   # build the graph, do not serve
+```
+
+Each region gets its own port, config and graph folder, so two can be built
+once and either served later. Great Britain is 2.2 GB of map and wants an 8 GB
+heap. Ireland and Northern Ireland together are 400 MB and want 5 GB.
+
+```
+Dublin to Belfast, routed entirely on this machine
+  102 miles, 1.7 h
+  roads: A1, A12, B38, M1, M50, N1, R132
+```
+
 ## Verifying a stop
 
 ```
@@ -183,6 +202,16 @@ and both can be removed:
 | postcodes.io gets a postcode | `./get-postcodes.sh` |
 | OSRM gets two coordinates | `./setup-local-routing.sh` |
 
+With a local GraphHopper the base route is computed there too, so `--offline`
+works without Docker and without an admin password:
+
+```
+  Phone handout written to plan.html
+--------------------------------------------------------------------
+  NOTHING ABOUT THIS JOURNEY LEFT THIS MACHINE.
+--------------------------------------------------------------------
+```
+
 ## Serve mode
 
 For a box at home. Polls on your own network, answers your phone over your own VPN.
@@ -200,15 +229,68 @@ python3 fuelrun-serve.py --bind 0.0.0.0 --osrm http://localhost:8989 --gh http:/
 
 Put it behind Tailscale or WireGuard. Do not expose it to the open internet.
 
+## Bank holidays
+
+All 8,138 registered forecourts publish a separate bank holiday timetable.
+1,912 of them differ from the matching weekday. At six on Christmas morning,
+1,168 give a different answer once it is read.
+
+Three calendars, because the nations do not share one. Scotland keeps
+2 January and St Andrew's Day. Northern Ireland keeps St Patrick's Day and
+the Twelfth. The dates come from `gov.uk/bank-holidays.json`, free and
+without a key, and which calendar a forecourt keeps is worked out from its
+own coordinates.
+
+```
+  St Andrew's Day. Holiday opening hours are in use below.
+  REACHABLE STOPS, furthest first (14 within range)
+--------------------------------------------------------------------
+  [OPEN  ] mile   57  ETA 08:14  Brora Fuel Express Automat  1.79/L  24 hours
+            St Andrew's Day hours
+  [SHUT  ] mile   35  ETA 07:45  Morangie Filling Station    1.80/L  shut at 07:45
+            St Andrew's Day hours
+```
+
+That second one reads OPEN on its weekday row.
+
 ## Sources
 
-| Country | Closures | Access |
+| Country | Source | Access |
 |---|---|---|
 | Scotland | Traffic Scotland | scraped |
 | England | National Highways `trafficsearchapi` | their JSON, no key |
 | Wales | Traffic Wales | scraped |
 | Northern Ireland | TrafficwatchNI | scraped |
+| Ireland | Transport Infrastructure Ireland | GraphQL behind their map |
+| Germany | autobahn.de | per road, no key |
+| France | Bison Fute | one file per event, no key |
+| Austria | ASFINAG public RSS | no key |
+| Luxembourg | CITA | DATEX II v3.6, CC0 |
+| Slovenia | DARS | Atom feed, no key |
+| Spain | DGT | DATEX II, no key |
+| Netherlands | NDW | DATEX II, no key |
 | Finland | Digitraffic | DATEX II, no key |
+
+About 10,000 live incidents. 4.2% carry a type this tool cannot rank, and
+nearly all of those are the Dutch feed's literal `other`.
+
+### "Registration required" usually is not
+
+Public directories list England, Scotland, Austria and Slovenia as needing an
+account, and all four are wired up here without one, because the registration
+attaches to the official DATEX II feed and not to the authority's own public
+channels. Those are open. The same authority is often publishing the
+same incidents on a web page, an RSS feed or the JSON behind their own map,
+and those are open.
+
+| Country | Official feed | What this uses instead |
+|---|---|---|
+| England | account | the JSON behind their traffic map |
+| Scotland | account | the public incident page |
+| Austria | `contentportal.asfinag.at`, account | `publiccontent.asfinag.at` RSS |
+| Slovenia | account | the DARS B2B Atom feed |
+
+Look for the public route before writing a country off.
 
 Fuel: UK Fuel Finder (OGL v3.0), OpenStreetMap elsewhere. Routing: OSRM or
 GraphHopper. Geocoding: Nominatim, postcodes.io, or OS Code-Point Open.
@@ -236,29 +318,37 @@ DATEX II standardises the envelope and leaves location referencing open.
 Finland publishes AlertC codes with no road number and no coordinates. Check a
 feed's contents before assuming route matching will work.
 
-Ireland has no live incident feed. Its National Access Point is `data.gov.ie`,
-where Transport Infrastructure Ireland publishes journey times, traffic counts
-and 2014 collision data. A commented entry waits in `fuelrun.py`.
+Ireland's National Access Point carries journey times, traffic counts and
+2014 collision data, with no incident publication at all, so the entry here
+reads the GraphQL that sits behind Transport Infrastructure Ireland's own
+public map. That is undocumented and can change without notice, and the
+provider health check is what catches it when it does.
 
 ## Known limits
 
 | | |
 |---|---|
-| Scraping | three of five providers parse web pages and will break on redesign |
+| Scraping | 5 of 14 providers read a web page or an undocumented API and will break on redesign |
+| Coverage | 10 EU member states of 27. Most of the rest put their feed behind an account |
+| Borders | road numbers repeat across countries, and bounding boxes overlap at the border |
 | Data errors | Forecourt Trader found every supermarket site in Fuel Finder mislabelled |
 | Snapshots | the offline page states when it was made |
 | Consumption | one flat mpg figure, no hills, load, weather or speed |
 | Hours outside GB | OpenStreetMap only, and it reports `no hours recorded` |
+| Overpass | the public instances rate-limit, so long routes fall back through four mirrors |
 
 ## Tests
 
 ```bash
 python3 test_fuelrun.py          # logic only, no network, instant
-python3 test_fuelrun.py --live   # also hits all seven live feeds
+python3 test_fuelrun.py --live   # also hits every live feed
 ```
 
-41 tests. The live ones break when a source changes its format, which is what
-they are for.
+60 tests. The live ones break when a source changes its format, which is what
+they are for. Several exist because of a bug that shipped: five feeds reported
+a coned-off lane as a shut road, two early returns swallowed the `--out` file
+without saying so, and cached incidents kept a severity judgement that had
+since been corrected.
 
 ## Provider health
 

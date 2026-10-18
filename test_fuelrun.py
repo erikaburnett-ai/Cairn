@@ -42,6 +42,31 @@ class Severity(unittest.TestCase):
     def test_footway_closure_is_minor(self):
         self.assertGreaterEqual(fr._rank("footway closure"), 3)
 
+    def test_spacing_never_changes_the_rank(self):
+        """Feeds write the same thing four ways. "laneClosures" must not fall
+        through "lane closure" into "closure" and read as a shut motorway."""
+        for a, b in [("lane closure", "laneClosures"), ("lane closure", "LaneClosed"),
+                     ("road closure", "roadClosed"), ("roadworks", "RoadWorks"),
+                     ("maintenance works", "MaintenanceWorks")]:
+            self.assertEqual(fr._rank(a), fr._rank(b), f"{a} vs {b}")
+
+    def test_the_five_feeds_that_got_this_wrong(self):
+        """One case per country that shipped a wrong rank. Five so far, and
+        every one of them was a closed lane reported as a closed road."""
+        for kind, worst in [("A0002 lane closure", 1),      # TrafficwatchNI
+                            ("minor roadworks", 2),          # autobahn.de
+                            ("lorry restriction", 2),        # promet.si
+                            ("laneClosures", 1),             # Bison Fute
+                            ("ramp closed", 1)]:             # verkeerscentrum.be
+            self.assertGreater(fr._rank(kind), worst, kind)
+
+    def test_xsi_types_are_ranked(self):
+        """Several publishers put severity only in xsi:type. Luxembourg's whole
+        feed and 165 of Spain's 166 records were unranked until that was read."""
+        for k in ("MaintenanceWorks", "ConstructionWorks", "EquipmentOrSystemFault",
+                  "AbnormalTraffic", "VehicleObstruction", "flooding"):
+            self.assertLess(fr._rank(k), 4, k)
+
     def test_unknown_types_sort_last(self):
         self.assertEqual(fr._rank("some new thing"), 4)
         self.assertEqual(fr._rank(""), 4)
@@ -115,6 +140,100 @@ class OpeningHours(unittest.TestCase):
         s = self.station(sunday={"open": "10:00:00", "close": "16:00:00", "all_day": False})
         self.assertIs(fr.ff_open_at(s, datetime(2026, 10, 18, 12, 0)), True)   # Sunday
         self.assertIsNone(fr.ff_open_at(s, datetime(2026, 10, 16, 12, 0)))     # Friday
+
+
+class BankHolidays(unittest.TestCase):
+    """Every one of the 8,139 forecourts publishes a bank holiday row and
+    1,912 of them differ from the matching weekday. At six on Christmas
+    morning 1,168 answer differently once it is read."""
+
+    HOL = {"scotland": {"2026-11-30": "St Andrew's Day", "2026-12-25": "Christmas Day"},
+           "england-and-wales": {"2026-12-25": "Christmas Day"},
+           "northern-ireland": {"2026-03-17": "St Patrick's Day", "2026-12-25": "Christmas Day"}}
+
+    @staticmethod
+    def station(lat, lon, usual, bh):
+        h = {d: dict(usual) for d in fr.FF_DAYS}
+        h["bank_holiday"] = bh
+        return {"ff_hours": h, "temp_closed": False, "lat": lat, "lon": lon}
+
+    def test_the_holiday_row_wins_on_a_bank_holiday(self):
+        s = self.station(51.5, -0.1,
+                         {"open": "06:00:00", "close": "22:00:00", "all_day": False},
+                         {"open": "09:00:00", "close": "16:00:00", "all_day": False})
+        xmas = datetime(2026, 12, 25, 7, 0)          # inside Friday, outside the holiday
+        self.assertIs(fr.ff_open_at(s, xmas, self.HOL), False)
+        self.assertIs(fr.ff_open_at(s, datetime(2026, 12, 18, 7, 0), self.HOL), True)
+
+    def test_an_empty_holiday_row_falls_back(self):
+        s = self.station(51.5, -0.1,
+                         {"open": "06:00:00", "close": "22:00:00", "all_day": False},
+                         {"open": "", "close": "", "all_day": False})
+        self.assertIs(fr.ff_open_at(s, datetime(2026, 12, 25, 7, 0), self.HOL), True)
+
+    def test_st_andrews_day_is_scottish_only(self):
+        row = {"open": "06:00:00", "close": "22:00:00", "all_day": False}
+        shut = {"open": "10:00:00", "close": "16:00:00", "all_day": False}
+        nov30 = datetime(2026, 11, 30, 7, 0)
+        self.assertIs(fr.ff_open_at(self.station(55.95, -3.19, row, shut), nov30, self.HOL), False)
+        self.assertIs(fr.ff_open_at(self.station(51.48, -3.18, row, shut), nov30, self.HOL), True)
+
+    def test_the_border_runs_where_the_border_runs(self):
+        for place, lat, lon, div in [
+                ("Gretna", 55.00, -3.06, "scotland"),
+                ("Carlisle", 54.89, -2.93, "england-and-wales"),
+                ("Berwick", 55.77, -2.00, "england-and-wales"),
+                ("Coldstream", 55.65, -2.25, "scotland"),
+                ("Campbeltown", 55.43, -5.61, "scotland"),
+                ("Belfast", 54.60, -5.93, "northern-ireland")]:
+            self.assertEqual(fr.uk_division(lat, lon), div, place)
+
+
+class CrossBorder(unittest.TestCase):
+    """A1 exists in Britain, the Netherlands, Germany, Austria and France.
+    Amsterdam to Munich put an Austrian tunnel closure on the Dutch A1."""
+
+    AT = (46.3, 49.1, 9.5, 17.2)
+
+    def test_a_dutch_a1_is_not_an_austrian_a1(self):
+        dutch = {"A1": [(52.2, 5.3), (52.1, 6.0)]}
+        self.assertFalse(fr._road_runs_through({"A1"}, dutch, self.AT))
+
+    def test_an_austrian_a1_still_matches(self):
+        austrian = {"A1": [(48.2, 14.3), (48.0, 15.4)]}
+        self.assertTrue(fr._road_runs_through({"A1"}, austrian, self.AT))
+
+    def test_britain_does_not_claim_ireland(self):
+        """England's box reaches 6.5W and Scotland's 8.7W, so both contain
+        Dublin. A Dublin to Belfast run collected English A1 and M1 works."""
+        dublin_belfast = [(53.35, -6.26), (53.9, -6.4), (54.2, -6.3), (54.60, -5.93)]
+        names = {p["name"] for p in fr.providers_for(dublin_belfast)}
+        self.assertNotIn("National Highways", names)
+        self.assertNotIn("Traffic Scotland", names)
+        self.assertIn("TrafficwatchNI", names)
+
+    def test_britain_still_claims_britain(self):
+        glasgow_london = [(55.86, -4.25), (54.5, -2.6), (53.0, -1.5), (51.51, -0.13)]
+        names = {p["name"] for p in fr.providers_for(glasgow_london)}
+        self.assertIn("National Highways", names)
+        self.assertIn("Traffic Scotland", names)
+
+    def test_an_irish_a1_is_not_an_english_a1(self):
+        england = (49.8, 56.0, -6.5, 2.0)
+        irish = {"A1": [(54.2, -6.30), (54.4, -6.15)]}
+        self.assertFalse(fr._road_runs_through({"A1"}, irish, england, fr.IRELAND))
+        english = {"A1": [(52.5, -0.45), (53.1, -0.80)]}
+        self.assertTrue(fr._road_runs_through({"A1"}, english, england, fr.IRELAND))
+
+    def test_european_road_numbers_survive_the_regex(self):
+        """The old pattern allowed A, M and B only, so N154, D920, R132 and
+        S1 were dropped before the matcher ever saw them."""
+        import re
+        for ref in ("A1", "M6", "A74(M)", "N154", "D920", "R132", "S1", "E40", "AP7"):
+            self.assertTrue(re.fullmatch(fr.ROAD_RE, ref), ref)
+
+    def test_no_index_keeps_the_old_behaviour(self):
+        self.assertTrue(fr._road_runs_through({"A1"}, None, self.AT))
 
 
 class OsmHours(unittest.TestCase):
@@ -211,6 +330,44 @@ class Blocking(unittest.TestCase):
 
     def test_nothing_to_block_means_no_request(self):
         self.assertIsNone(fr.reroute_avoiding({}, {}, [], "http://localhost:1"))
+
+
+class CachedSeverity(unittest.TestCase):
+    """A cached incident stores the rank it was given when it was written.
+    Improving the severity table has to reach those records too, or the fix
+    does nothing until the cache expires."""
+
+    def test_rank_is_recomputed_not_trusted(self):
+        import re as _re
+        src = open(fr.__file__).read()
+        body = src[src.index("def p_datex2_bulk"):]
+        head = body[:body.index("blob = CACHE")]
+        self.assertIn('"rank": _rank(', head,
+                      "cached incidents are returned with their stored rank")
+
+
+class EveryExit(unittest.TestCase):
+    """main() had two early returns above the handout and the privacy
+    report. Asking for --out on a journey you had the fuel for wrote no
+    file and said nothing, and --privacy reported nothing at all."""
+
+    def test_no_return_in_main_skips_finish(self):
+        src = open(fr.__file__).read()
+        body = src[src.index("\ndef main():"):]
+        lines = [l.strip() for l in body.splitlines()]
+        for n, line in enumerate(lines):
+            if line != "return":
+                continue
+            window = " ".join(lines[max(0, n - 8):n])
+            self.assertTrue("finish(" in window or "json.dumps(out" in window,
+                            f"a return in main() at offset {n} skips both "
+                            f"finish() and the json exit: {window[-90:]}")
+
+    def test_finish_writes_and_reports(self):
+        src = open(fr.__file__).read()
+        fin = src[src.index("def finish("):src.index("def main():")]
+        self.assertIn("write_plan(", fin)
+        self.assertIn("LEFT THIS MACHINE", fin)
 
 
 class CacheKeys(unittest.TestCase):

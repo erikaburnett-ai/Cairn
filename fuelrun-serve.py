@@ -58,6 +58,8 @@ GH_URL = None
 def poll_closures():
     found, problems = [], []
     for pr in fr.PROVIDERS:
+        if pr.get("per_road"):
+            continue          # asks per road number, so it needs a route first
         try:
             got = pr["fn"]()
         except Exception as e:
@@ -253,10 +255,13 @@ def main():
         fr.OSRM_BASE = a.osrm.rstrip("/")
     global GH_URL
     GH_URL = a.gh
+    # route() reads the module-level GH_BASE, so a served plan routed through
+    # the public OSRM even with a local GraphHopper sitting right there.
+    fr.GH_BASE = a.gh.rstrip("/") if a.gh else None
 
     print(f"fuelrun serve")
     print(f"  listening   http://{a.bind}:{a.port}")
-    print(f"  routing     {fr.OSRM_BASE}")
+    print(f"  routing     {a.gh or fr.OSRM_BASE}")
     print(f"  providers   {', '.join(p['name'] for p in fr.PROVIDERS) or 'none registered'}")
     print(f"  polling     closures every {a.closure_mins:g} min, fuel every {a.fuel_hours:g} h")
     if a.bind == "0.0.0.0":

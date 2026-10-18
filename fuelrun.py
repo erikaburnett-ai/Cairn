@@ -27,6 +27,7 @@ Usage:
 #
 
 import argparse, hashlib, json, math, re, subprocess, sys, time, urllib.parse
+from html import unescape
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -50,6 +51,10 @@ def get(url, tries=4, pause=3):
     failure against router.project-osrm.org while curl connects to it happily,
     so curl it is.
     """
+    # Name the host in the retry line. A bare "retrying, empty response"
+    # on a long European route tells you nothing about which of fourteen
+    # sources has gone quiet, and the run can sit there for minutes.
+    host = urllib.parse.urlparse(url).netloc or url[:40]
     last = None
     for n in range(tries):
         try:
@@ -64,14 +69,72 @@ def get(url, tries=4, pause=3):
             last = str(e)
         if n < tries - 1:
             wait = pause * (2 ** n)
-            print(f"  retrying in {wait}s ({last[:60].strip()})", file=sys.stderr)
+            print(f"  {host}: retrying in {wait}s ({last[:52].strip()})", file=sys.stderr)
             time.sleep(wait)
     raise RuntimeError(f"gave up after {tries} tries: {last}")
+
+
+def get_text(url, headers=None, ua=None):
+    """Same idea as get(), for feeds that answer in XML rather than JSON."""
+    cmd = ["curl", "-sL", "--max-time", "45", "-A", ua or BROWSER_UA]
+    for k, v in (headers or {}).items():
+        cmd += ["-H", f"{k}: {v}"]
+    try:
+        return subprocess.run(cmd + [url], capture_output=True, text=True, timeout=60).stdout
+    except Exception:
+        return ""
+
+
+OVERPASS = [
+    "https://overpass-api.de/api/interpreter",
+    "https://overpass.kumi.systems/api/interpreter",
+    "https://overpass.osm.ch/api/interpreter",
+    "https://overpass.private.coffee/api/interpreter",
+]
+
+
+def overpass(query, tries=2):
+    """Ask whichever public Overpass instance answers first.
+
+    The main instance rate-limits, and on a five hundred mile corridor it
+    returns an empty body and keeps returning one. A single endpoint with a
+    long backoff turns that into a run that sits there for four minutes
+    saying nothing useful, so this walks a list of mirrors and gives up
+    quickly on each. Raises only when every one of them has refused.
+    """
+    last = None
+    for base in OVERPASS:
+        try:
+            return get(base + "?" + urllib.parse.urlencode({"data": query}),
+                       tries=tries, pause=3)
+        except Exception as e:
+            last = e
+            print(f"  {urllib.parse.urlparse(base).netloc} is busy, trying another",
+                  file=sys.stderr)
+    raise RuntimeError(f"every Overpass mirror refused: {last}")
 
 
 # ----------------------------------------------------------------- geo
 
 OSRM_BASE = "https://router.project-osrm.org"   # overridden by --osrm
+GH_BASE = None                                  # set by --gh, routes locally
+
+# A1, M6, A74(M), N154, D920, R0, S1, E40, AP7, SS1. The old pattern allowed
+# A, M and B only, so every road number outside Britain was dropped before
+# the closure matcher ever saw it, and a French or Irish route matched nothing.
+ROAD_RE = r"[A-Z]{1,2}\d{1,4}(?:\(M\))?"
+
+# The island of Ireland. A rectangle around Great Britain cannot avoid it:
+# England's box reaches to 6.5W, which contains Dublin, and Scotland's reaches
+# to 8.7W, which contains all of it. So a Dublin to Belfast run collected
+# English A1 and M1 roadworks, correctly matched on the number and nine
+# hundred miles away. The British providers carry this as an exclusion.
+IRELAND = (51.3, 55.45, -10.7, -5.35)
+
+
+def _inside(box, lat, lon):
+    la0, la1, lo0, lo1 = box
+    return la0 <= lat <= la1 and lo0 <= lon <= lo1
 LEAKED = []                                     # calls that revealed a destination
 
 
@@ -143,6 +206,38 @@ def resolve(place, offline=False):
     return {**out, "how": "Nominatim"}
 
 
+def route_graphhopper(a, b, gh_url):
+    """Base routing against a GraphHopper on this machine.
+
+    Without this the only engine was OSRM, so anybody who took the Java
+    route got local rerouting and still sent the journey itself to a public
+    server. The setup script promises journeys never leave the machine, and
+    on the Java path that promise was not kept.
+    """
+    url = (f"{gh_url.rstrip('/')}/route?point={a['lat']},{a['lon']}"
+           f"&point={b['lat']},{b['lon']}&profile=car&points_encoded=false"
+           f"&instructions=false&details=street_ref&ch.disable=true")
+    res = get(url, tries=2)
+    paths = res.get("paths") or []
+    if not paths:
+        raise SystemExit(f"Local routing failed: {res.get('message', 'no path found')}")
+    pth = paths[0]
+    pts = pth["points"]["coordinates"]                    # [lon, lat]
+    coords = [(c[1], c[0]) for c in pts]
+    roads, idx = set(), {}
+    for lo, hi, ref in (pth.get("details") or {}).get("street_ref", []):
+        for one in re.split(r"[;,/ ]+", (ref or "").upper()):
+            if not re.fullmatch(ROAD_RE, one):
+                continue
+            roads.add(one)
+            seg = [[round(c[1], 5), round(c[0], 5)] for c in pts[lo:hi + 1:3]]
+            if seg:
+                idx.setdefault(one, []).extend(seg)
+    return {"miles": pth["distance"] * MILES_PER_METRE,
+            "hours": pth["time"] / 3600000.0,
+            "coords": coords, "roads": roads, "road_points": idx}
+
+
 def route(a, b, offline=False):
     ck = CACHE / f"route_{a['lat']:.4f}_{a['lon']:.4f}_{b['lat']:.4f}_{b['lon']:.4f}.json"
     if ck.exists():
@@ -150,8 +245,15 @@ def route(a, b, offline=False):
         d["roads"] = set(d["roads"])
         d["cached"] = True
         return d
-    if offline and "localhost" not in OSRM_BASE and "127.0.0.1" not in OSRM_BASE:
-        raise SystemExit("Route not cached and --offline is set. Run once online, or use --osrm.")
+    local_gh = GH_BASE and ("localhost" in GH_BASE or "127.0.0.1" in GH_BASE)
+    local_osrm = "localhost" in OSRM_BASE or "127.0.0.1" in OSRM_BASE
+    if GH_BASE and not local_osrm:
+        out = route_graphhopper(a, b, GH_BASE)
+        ck.write_text(json.dumps({**out, "roads": sorted(out["roads"])}))
+        return out
+    if offline and not (local_osrm or local_gh):
+        raise SystemExit("Route not cached and --offline is set. Run once online, "
+                         "or point --osrm or --gh at a server on this machine.")
     url = (f"{OSRM_BASE}/route/v1/driving/"
            f"{a['lon']},{a['lat']};{b['lon']},{b['lat']}"
            f"?overview=full&geometries=geojson&steps=true")
@@ -165,7 +267,7 @@ def route(a, b, offline=False):
         for step in leg.get("steps", []):
             for ref in (step.get("ref") or "").split(";"):
                 ref = ref.strip().upper()
-                if re.fullmatch(r"[AMB]\d{1,4}\(?M?\)?", ref):
+                if re.fullmatch(ROAD_RE, ref):
                     roads.add(ref)
     idx = {}
     for leg in r.get("legs", []):
@@ -176,7 +278,7 @@ def route(a, b, offline=False):
                 continue
             for ref in (st.get("ref") or "").split(";"):
                 ref = ref.strip().upper()
-                if re.fullmatch(r"[AMB]\d{1,4}\(?M?\)?", ref):
+                if re.fullmatch(ROAD_RE, ref):
                     idx.setdefault(ref, []).extend(pts)
     out = {"miles": r["distance"] * MILES_PER_METRE,
            "hours": r["duration"] / 3600,
@@ -221,8 +323,7 @@ def fuel_near_route(coords, radius_m=3000):
          f'(node["amenity"="fuel"](around:{radius_m},{poly});'
          f' way["amenity"="fuel"](around:{radius_m},{poly}););'
          f'out center tags;')
-    url = "https://overpass-api.de/api/interpreter?" + urllib.parse.urlencode({"data": q})
-    res = get(url, tries=5, pause=5)
+    res = overpass(q)
 
     stations = []
     for e in res.get("elements", []):
@@ -271,8 +372,7 @@ def junction_index(route_coords, road_points):
     q = (f'[out:json][timeout:60];node["highway"="motorway_junction"]'
          f'["ref"](around:2500,{poly});out body;')
     try:
-        res = get("https://overpass-api.de/api/interpreter?"
-                  + urllib.parse.urlencode({"data": q}), tries=3, pause=4)
+        res = overpass(q)
     except Exception:
         return {}
 
@@ -367,20 +467,33 @@ def locate_closure(inc, steps_index, route_coords, junctions=None):
 # wall. Matching "closure" loosely called 145 Northern Irish lane closures
 # blockages, which would have sent people on diversions they did not need.
 SEVERITY = [
-    ("lane closure", 2), ("footway closure", 3), ("lanes closed", 2),
+    ("minor roadworks", 3), ("lane restriction", 3), ("lorry restriction", 3),
+    ("lane closure", 2), ("lane closed", 2), ("ramp closed", 2),
+    ("ramp closure", 2), ("slip road closed", 2), ("footway closure", 3),
+    ("footway closed", 3), ("lanes closed", 2),
     ("road closure", 0), ("roadclosed", 0), ("carriagewayclosed", 0),
     ("closure", 0), ("closed", 0),
     ("accident", 1), ("collision", 1), ("obstruction", 1), ("vehicle fire", 1),
-    ("roadworks", 1), ("maintenanceworks", 1), ("maintenance", 1), ("repair", 1),
-    ("contraflow", 2), ("hazard", 2), ("authorityoperation", 2), ("weather", 2),
+    ("roadwork", 1), ("maintenancework", 1), ("constructionwork", 1),
+    ("maintenance", 1), ("repair", 1),
+    ("contraflow", 2), ("flooding", 2), ("hazard", 2),
+    ("peopleonroadway", 2), ("disturbance", 2), ("demonstration", 2),
+    ("incident", 2), ("publicevent", 3), ("transitinformation", 3),
+    ("reroutingmanagement", 3), ("authorityoperation", 2), ("weather", 2),
+    ("equipmentorsystemfault", 3), ("signalfault", 3),
     ("abnormaltraffic", 3), ("queue", 3), ("congestion", 3), ("delay", 3),
 ]
 
 
 def _rank(kind):
-    k = re.sub(r"[^a-z ]", "", (kind or "").lower())
+    """Feeds write the same thing four ways: "lane closure", "laneClosures",
+    "LaneClosed", "lane_closure". Matching on the spaced form alone means
+    "laneClosures" misses "lane closure", falls through to "closure", and a
+    coned-off lane is reported as a shut motorway. So spaces come out of both
+    sides before comparing. Four countries have been ranked wrong by this."""
+    k = re.sub(r"[^a-z]", "", (kind or "").lower())
     for word, n in SEVERITY:
-        if word in k:
+        if word.replace(" ", "") in k:
             return n
     return 4
 
@@ -548,7 +661,7 @@ def p_datex2(name, url, headers=None, gzip_required=False):
     coordinates, some give road numbers, some give AlertC codes and nothing
     else. This pulls whatever is there and reports what it couldn't find.
     """
-    cmd = ["curl", "-sL", "--max-time", "45", "-A", UA]
+    cmd = ["curl", "-sL", "--max-time", "45", "-A", BROWSER_UA]
     if gzip_required:
         cmd.append("--compressed")
     for k, v in (headers or {}).items():
@@ -556,7 +669,13 @@ def p_datex2(name, url, headers=None, gzip_required=False):
     xml = subprocess.run(cmd + [url], capture_output=True, text=True, timeout=70).stdout
     if "<" not in xml:
         raise RuntimeError(f"{name}: no XML returned ({xml[:60].strip()})")
+    return datex2_parse(name, xml)
 
+
+def datex2_parse(name, xml):
+    """The DATEX II half of p_datex2, split out because not every publisher
+    serves one file. France serves one file per event, so it fetches many
+    and parses each with this."""
     import xml.etree.ElementTree as ET
     root = ET.fromstring(xml)
     strip = lambda tag: tag.rsplit("}", 1)[-1]
@@ -579,9 +698,14 @@ def p_datex2(name, url, headers=None, gzip_required=False):
     for sit in root.iter():
         if strip(sit.tag) != "situationRecord":
             continue
-        kind = first(sit, "roadOrCarriagewayOrLaneManagementType", "obstructionType",
-                     "accidentType", "environmentalObstructionType",
-                     "networkManagementType", "generalNetworkManagementType") or "incident"
+        # Several publishers put the only severity information in the XSI
+        # type attribute, not in a child element: xsi:type="sit:MaintenanceWorks".
+        # Reading the children alone ranks their whole feed as unknown.
+        xsi = sit.get("{http://www.w3.org/2001/XMLSchema-instance}type", "")
+        kind = (first(sit, "roadOrCarriagewayOrLaneManagementType", "obstructionType",
+                      "accidentType", "environmentalObstructionType",
+                      "networkManagementType", "generalNetworkManagementType")
+                or xsi.split(":")[-1] or "incident")
         desc = first(sit, "value", "generalPublicComment", "comment")
         road = first(sit, "roadNumber", "roadIdentifier", "aRoadNumber")
         lat = num(sit, "latitude")
@@ -708,7 +832,12 @@ def p_datex2_bulk(name, url, max_age_hours=6, gzipped=True):
     slug = re.sub(r"[^a-z0-9]+", "_", name.lower())
     parsed = CACHE / f"bulk_{slug}.json"
     if parsed.exists() and (time.time() - parsed.stat().st_mtime) < max_age_hours * 3600:
-        return [{**d, "roads": set(d.get("roads") or [])} for d in json.loads(parsed.read_text())]
+        # Rank again from the stored type rather than trusting the stored
+        # rank. Severity is a judgement this tool keeps improving, and a
+        # cached file written an hour ago would otherwise pin yesterday's
+        # judgement to 8,577 Dutch records until it expired.
+        return [{**d, "roads": set(d.get("roads") or []), "rank": _rank(d.get("type"))}
+                for d in json.loads(parsed.read_text())]
 
     blob = CACHE / f"bulk_{slug}.raw"
     if not (blob.exists() and (time.time() - blob.stat().st_mtime) < max_age_hours * 3600):
@@ -760,14 +889,212 @@ def p_datex2_bulk(name, url, max_age_hours=6, gzipped=True):
 #   coords  the feed gives lat/lon, match by distance to the route line
 #   all     the feed gives neither, so show everything it reports and say so
 
+# ----------------------------------------------------------------- Germany
+
+AUTOBAHN = "https://verkehr.autobahn.de/o/autobahn"
+
+
+def p_autobahn(route_roads):
+    """Germany publishes per road, not per country.
+
+    There is no national file to download. You ask for A7 and you get A7.
+    Seeing the whole network means about 120 requests, which nobody should
+    make, and seeing the roads you are actually driving means two. So this
+    provider gets handed the route's own road numbers and asks about those.
+
+    The records carry a road number, a coordinate and a future flag, so the
+    scheduled-works problem that bit the Dutch feed is answered in the data.
+    """
+    from concurrent.futures import ThreadPoolExecutor
+    want = sorted(r for r in route_roads if re.fullmatch(r"A\d{1,3}", r))[:10]
+    if not want:
+        return []
+
+    jobs = [(r, k) for r in want for k in ("closure", "roadworks", "warning")]
+
+    def fetch(job):
+        road, kind = job
+        try:
+            return road, kind, (get(f"{AUTOBAHN}/{road}/services/{kind}", tries=2) or {})
+        except Exception:
+            return road, kind, {}
+
+    out = []
+    with ThreadPoolExecutor(max_workers=6) as pool:
+        for road, kind, d in pool.map(fetch, jobs):
+            for r in d.get(kind, []) or []:
+                if r.get("future"):           # scheduled, not happening yet
+                    continue
+                # impact.symbols is a lane diagram, not a severity flag: it
+                # reads CLOSED once per closed lane, so a line-painting job
+                # with one lane coned off carries the same word as a shut
+                # motorway. isBlocked is the only field that means shut.
+                sym = (r.get("impact") or {}).get("symbols") or []
+                blocked = str(r.get("isBlocked", "")).lower() == "true"
+                takes_lanes = "CLOSED" in sym
+                if blocked:
+                    typ = "road closure"
+                elif kind == "closure":
+                    typ = "lane closure"
+                elif kind == "roadworks":
+                    typ = "roadworks" if takes_lanes else "minor roadworks"
+                else:
+                    typ = "hazard"
+                c = r.get("coordinate") or {}
+                try:
+                    lat, lon = float(c.get("lat")), float(c.get("long"))
+                except (TypeError, ValueError):
+                    lat = lon = None
+                desc = " ".join(x for x in (r.get("description") or []) if x)
+                out.append(_norm("Germany", r.get("title") or road, typ,
+                                 direction=(r.get("subtitle") or "").strip(),
+                                 desc=desc[:300], roads={road}, lat=lat, lon=lon))
+    return out
+
+
+# ----------------------------------------------------------------- Belgium
+
+def p_verkeerscentrum():
+    """The Flemish traffic centre's DATEX II endpoint is dead and its map is
+    a single-page app. Their textual situation page is neither, and it names
+    the type in an icon filename and the road in its own field, so it parses
+    without guessing. Flanders only: Wallonia and Brussels run separately.
+    """
+    x = get_text("https://www.verkeerscentrum.be/tekstuele-verkeerssituatie")
+    if "event-tcc" not in (x or ""):
+        return []
+    kinds = {"ongeval": "accident", "file": "queue", "wegenwerken": "roadworks",
+             "afgesloten": "road closure", "gesloten": "road closure",
+             "hinder": "obstruction", "incident": "incident",
+             "wind": "weather", "sneeuw": "weather", "mist": "weather"}
+    out = []
+    for art in re.split(r"<article class=\"node node--event-tcc", x)[1:]:
+        icon = (re.search(r"/icons/([A-Za-z_]+?)_?\d*\.svg", art) or [None, ""])[1].lower()
+        road = (re.search(r'field--field-tcc-road-name.*?<div class="item">(.*?)</div>', art, re.S)
+                or [None, ""])[1]
+        title = (re.search(r"<h2>\s*(.*?)\s*</h2>", art, re.S) or [None, ""])[1]
+        title = unescape(re.sub(r"<[^>]+>", " ", title)).strip()
+        if not title:
+            continue
+        typ = kinds.get(icon) or next((v for k, v in kinds.items() if k in title.lower()), "incident")
+        # Every authority separates a closed lane from a closed road, and
+        # every one of them does it in its own language. "Een rijstrook
+        # afgesloten" is one lane coned off. "Weg afgesloten" is the road.
+        # Reading the shared word and stopping there shuts the Brussels ring.
+        low = title.lower()
+        if "weg afgesloten" in low:
+            typ = "road closure"
+        elif "rijstrook" in low or "rijstroken" in low:
+            typ = "lane closure"
+        elif "oprit afgesloten" in low or "afrit afgesloten" in low:
+            typ = "ramp closed"
+        elif "afgesloten" in low or "gesloten" in low:
+            typ = "road closure"
+        roads = set(re.findall(r"\b([ARNE]\d{1,3})\b", (unescape(road) + " " + title).upper()))
+        out.append(_norm("Belgium", title, typ, desc=unescape(road).strip(), roads=roads))
+    return out
+
+
+# ----------------------------------------------------------------- France
+
+BISON = "https://tipi.bison-fute.gouv.fr/bison-fute-ouvert/publicationsDIR/Evenementiel-DIR/grt/RRN"
+
+
+def p_bison_fute(limit=80):
+    """France publishes one SOAP-wrapped DATEX II file per event, about 1,600
+    of them in an Apache directory, with no combined feed. Downloading the lot
+    is 8 MB and 1,600 requests, so this reads the index newest-first and takes
+    the freshest few dozen. Older files are long-running works that have not
+    been touched in months.
+    """
+    from concurrent.futures import ThreadPoolExecutor
+    index = get_text(f"{BISON}/?C=M;O=D")
+    names = re.findall(r'href="(\d+\.xml)"', index or "")
+    if not names:
+        return []
+
+    def one(n):
+        try:
+            return datex2_parse("France", get_text(f"{BISON}/{n}"))
+        except Exception:
+            return []
+
+    out = []
+    with ThreadPoolExecutor(max_workers=12) as pool:
+        for got in pool.map(one, names[:limit]):
+            out += got
+    return out
+
+
+# ----------------------------------------------------------------- Austria
+
+def p_asfinag():
+    """ASFINAG's content portal needs an account. Their public RSS does not,
+    and it carries the messages that matter: closures, tunnel closures, ramp
+    closures. Six to twenty entries, already filtered, no noise to wade through.
+    """
+    x = get_text("https://publiccontent.asfinag.at/rss/feed/de/trafficmessages")
+    if "<entry>" not in (x or ""):
+        return []
+    kinds = {"tunnelsperre": "road closure", "rampensperre": "lane closure",
+             "sperre": "road closure", "gesperrt": "road closure",
+             "baustelle": "roadworks", "unfall": "accident", "stau": "queue",
+             "behinderung": "obstruction", "gefahr": "hazard",
+             "routenempfehlung": "delay", "schnee": "weather", "glatt": "weather"}
+    out = []
+    for e in re.findall(r"<entry>(.*?)</entry>", x, re.S):
+        pick = lambda tag: unescape((re.search(rf"<{tag}>(.*?)</{tag}>", e, re.S) or [None, ""])[1]).strip()
+        title, body = pick("title"), pick("content")
+        low = (title + " " + body).lower()
+        typ = next((v for k, v in kinds.items() if k in low), "incident")
+        # A8, S1 (Schnellstrasse), B17. The shared regex misses the S roads.
+        roads = set(re.findall(r"\b([AS]\d{1,3})\b", body.upper())) | \
+                set(re.findall(r"\bB\d{1,3}\b", body.upper()))
+        out.append(_norm("Austria", f"{title}: {body[:70]}", typ,
+                         desc=body[:300], roads=roads, since=pick("published")[:10]))
+    return out
+
+
+# ----------------------------------------------------------------- Slovenia
+
+def p_promet_si():
+    """DARS publish an Atom feed in Slovenian. Road numbers, no coordinates."""
+    x = get_text("https://www.promet.si/dc/b2b.dogodki.rss")
+    if not x:
+        return []
+    # DARS categorise every entry, and the category is far more reliable than
+    # the prose. Almost every roadworks summary contains the word "zapora",
+    # because coning off one lane is a zapora too. Reading closure out of the
+    # text alone ranks the whole country as shut.
+    cats = {"delo": "roadworks", "ovir": "obstruction", "nesre": "accident",
+            "zasto": "queue", "vreme": "weather", "tovornjak": "lorry restriction",
+            "mejni": "border delay"}
+    out = []
+    for e in re.findall(r"<entry>(.*?)</entry>", x, re.S):
+        pick = lambda tag: (re.search(rf"<{tag}>(.*?)</{tag}>", e, re.S) or [None, ""])[1]
+        title = unescape(pick("title")).strip()
+        summary = unescape(pick("summary")).strip()
+        cat = unescape((re.search(r'category term="([^"]*)"', e) or [None, ""])[1]).lower()
+        blob = (title + " " + summary).lower()
+        typ = next((v for k, v in cats.items() if k in cat), "incident")
+        if "popolna zapora" in blob or "cesta je zaprta" in blob:
+            typ = "road closure"          # popolna: complete, as opposed to delna
+        elif typ == "roadworks" and "zaprt" in blob:
+            typ = "lane closure"
+        # A1, H4, R2-430, G1-4: take the leading code, drop the section number
+        roads = {m.group(1) for m in re.finditer(r"\b([AHRG]\d{1,3})(?:-\d+)?\b", title.upper())}
+        out.append(_norm("Slovenia", title, typ, desc=summary, roads=roads))
+    return out
+
+
 PROVIDERS = [
-    {"name": "Traffic Scotland", "box": (54.6, 61.0, -8.7, -0.7), "match": "roads",
+    {"name": "Traffic Scotland", "not_box": IRELAND, "box": (54.6, 61.0, -8.7, -0.7), "match": "roads",
      "fn": p_traffic_scotland, "note": "scraped public page"},
 
-    {"name": "National Highways", "box": (49.8, 56.0, -6.5, 2.0), "match": "roads",
+    {"name": "National Highways", "not_box": IRELAND, "box": (49.8, 56.0, -6.5, 2.0), "match": "roads",
      "fn": p_national_highways, "note": "their own JSON API, no key, paginated"},
 
-    {"name": "Traffic Wales", "box": (51.3, 53.5, -5.4, -2.6), "match": "roads",
+    {"name": "Traffic Wales", "not_box": IRELAND, "box": (51.3, 53.5, -5.4, -2.6), "match": "roads",
      "fn": p_traffic_wales, "note": "scraped public page"},
 
     {"name": "TrafficwatchNI", "box": (54.0, 55.4, -8.2, -5.4), "match": "roads",
@@ -775,6 +1102,33 @@ PROVIDERS = [
 
     {"name": "TII Ireland", "box": (51.3, 55.5, -10.7, -5.8), "match": "roads",
      "fn": p_tii_ireland, "note": "GraphQL behind their public map, undocumented"},
+
+    {"name": "Germany", "box": (47.2, 55.1, 5.8, 15.1), "match": "roads",
+     "per_road": True, "fn": p_autobahn,
+     "note": "autobahn.de, queried per road so only your own motorways are fetched"},
+
+    {"name": "Belgium", "box": (49.4, 51.6, 2.5, 5.95), "match": "roads",
+     "fn": p_verkeerscentrum, "note": "Flemish traffic centre, textual page, Flanders only"},
+
+    {"name": "France", "box": (41.3, 51.1, -5.2, 9.6), "match": "coords",
+     "fn": p_bison_fute,
+     "note": "Bison Fute, one file per event, freshest 80 read each run"},
+
+    {"name": "Austria", "box": (46.3, 49.1, 9.5, 17.2), "match": "roads",
+     "fn": p_asfinag, "note": "ASFINAG public RSS, already filtered to what matters"},
+
+    {"name": "Luxembourg", "box": (49.4, 50.2, 5.7, 6.6), "match": "coords",
+     "fn": lambda: p_datex2("Luxembourg",
+         "https://cita.lu/info_trafic/datex/situationrecord36"),
+     "note": "CITA, DATEX II v3.6, CC0"},
+
+    {"name": "Slovenia", "box": (45.4, 46.9, 13.3, 16.6), "match": "roads",
+     "fn": p_promet_si, "note": "DARS Atom feed, road numbers only, no coordinates"},
+
+    {"name": "Spain", "box": (35.9, 43.9, -9.4, 4.4), "match": "roads",
+     "fn": lambda: p_datex2("Spain",
+         "https://infocar.dgt.es/datex2/sct/SituationPublication/all/content.xml"),
+     "note": "DGT open DATEX II, no key"},
 
     {"name": "Netherlands", "box": (50.7, 53.6, 3.3, 7.3), "match": "coords",
      "fn": lambda: p_datex2_bulk("Netherlands",
@@ -787,29 +1141,55 @@ PROVIDERS = [
          "?situationType=TRAFFIC_ANNOUNCEMENT", gzip_required=True),
      "note": "Digitraffic, open, no key. AlertC locations, so no route matching."},
 
-    # Ireland: its National Access Point is data.gov.ie, and as of this build
-    # TII publishes journey times, traffic counts and historic collisions
-    # there. No live incident feed. Their 2023 ITS progress report said
-    # incidents would join the DATEX II feed "later this year" and it has not
-    # appeared. The day it does, this is the whole change:
+    # Ireland's National Access Point is data.gov.ie, and as of this build TII
+    # publish journey times, traffic counts and historic collisions there, with
+    # no incident publication at all. So the live Ireland entry above reads the
+    # GraphQL behind their own public map, which is undocumented and can be
+    # withdrawn without warning. Their 2023 ITS progress report said incidents
+    # would join the DATEX II feed "later this year" and it has not appeared.
+    # The day it does, swap the entry above for this one and delete the scrape:
     #
     # {"name": "Ireland", "box": (51.4, 55.4, -10.6, -5.9), "match": "coords",
     #  "fn": lambda: p_datex2("Ireland", "<feed url>"), "note": "TII DATEX II"},
 ]
 
 
+def _road_runs_through(roads, road_points, box, not_box=None):
+    """A1 exists in Britain, the Netherlands, Germany, Austria and France.
+    Matching on the number alone put an Austrian tunnel closure onto a Dutch
+    motorway on an Amsterdam to Munich run. So the stretch of this route that
+    carries the number has to lie inside the reporting country before the
+    match counts. Bounding boxes overlap at borders, so this narrows the
+    error without closing it.
+    """
+    if not road_points:
+        return True
+    for r in roads:
+        for lat, lon in road_points.get(r, ()):
+            if _inside(box, lat, lon) and not (not_box and _inside(not_box, lat, lon)):
+                return True
+    return False
+
+
 def providers_for(coords):
-    lats = [c[0] for c in coords]; lons = [c[1] for c in coords]
-    lo_la, hi_la, lo_lo, hi_lo = min(lats), max(lats), min(lons), max(lons)
+    """Which countries this route actually enters.
+
+    Tests real route points, not the route's own bounding box. A box around
+    a Dublin to Belfast run overlaps half of Europe, and the route is in two
+    countries.
+    """
+    step = max(1, len(coords) // 400)
+    thin = coords[::step] + [coords[-1]]
     hits = []
     for pr in PROVIDERS:
-        a, b, c, d = pr["box"]
-        if not (hi_la < a or lo_la > b or hi_lo < c or lo_lo > d):
+        nb = pr.get("not_box")
+        if any(_inside(pr["box"], la, lo) and not (nb and _inside(nb, la, lo))
+               for la, lo in thin):
             hits.append(pr)
     return hits
 
 
-def incidents_on_route(route_roads, coords, corridor_miles=4.0):
+def incidents_on_route(route_roads, coords, corridor_miles=4.0, road_points=None):
     """corridor_miles applies to road-number feeds. Coordinate feeds use a
     much tighter one, because countries that map every municipal pavement
     will otherwise bury the motorway closure you actually care about."""
@@ -824,7 +1204,7 @@ def incidents_on_route(route_roads, coords, corridor_miles=4.0):
 
     for pr in provs:
         try:
-            found = pr["fn"]()
+            found = pr["fn"](route_roads) if pr.get("per_road") else pr["fn"]()
         except Exception as e:
             problems.append(f"{pr['name']} FAILED: {str(e)[:60]}")
             _health_record(pr["name"], 0)
@@ -840,7 +1220,11 @@ def incidents_on_route(route_roads, coords, corridor_miles=4.0):
                 if d <= limit:
                     hits.append({**i, "why": f"{d:.1f} mi from your route"})
             elif i["roads"] & route_roads:
-                hits.append({**i, "why": "on " + ",".join(sorted(i["roads"] & route_roads))})
+                shared = i["roads"] & route_roads
+                if not _road_runs_through(shared, road_points, pr["box"],
+                                          pr.get("not_box")):
+                    continue        # same number, different country
+                hits.append({**i, "why": "on " + ",".join(sorted(shared))})
             elif mode == "all":
                 hits.append({**i, "why": f"somewhere in {pr['name']}, feed gives no location"})
 
@@ -896,6 +1280,11 @@ def load_fuelfinder(max_age_hours=6):
             hours[d] = {"open": r.get(f"{k}.open_time", "").strip(),
                         "close": r.get(f"{k}.close_time", "").strip(),
                         "all_day": r.get(f"{k}.is_24_hours", "").lower() == "true"}
+        bh = "forecourts.opening_times.bank_holiday.standard"
+        hours["bank_holiday"] = {
+            "open": r.get(f"{bh}.open_time", "").strip(),
+            "close": r.get(f"{bh}.close_time", "").strip(),
+            "all_day": r.get(f"{bh}.is_24_hours", "").lower() == "true"}
         out.append({
             "name": (r.get("forecourts.trading_name") or r.get("forecourts.brand_name") or "Unnamed").title(),
             "brand": r.get("forecourts.brand_name", ""),
@@ -909,11 +1298,83 @@ def load_fuelfinder(max_age_hours=6):
     return out
 
 
-def ff_open_at(st, when):
+# ----------------------------------------------------------------- bank holidays
+
+BH_URL = "https://www.gov.uk/bank-holidays.json"
+
+
+def bank_holidays(max_age_days=30):
+    """GOV.UK publish the official list, free and without a key.
+
+    Three divisions, because the nations do not share a calendar. Scotland
+    keeps 2 January and St Andrew's Day. Northern Ireland keeps St Patrick's
+    Day and the Twelfth. England and Wales keep neither. A forecourt that
+    runs bank holiday hours on 30 November is a Scottish problem only.
+    """
+    f = CACHE / "bank_holidays.json"
+    fresh = f.exists() and (time.time() - f.stat().st_mtime) < max_age_days * 86400
+    if not fresh:
+        try:
+            f.write_text(json.dumps(get(BH_URL, tries=2)))
+        except Exception:
+            if not f.exists():
+                return {}
+    try:
+        raw = json.loads(f.read_text())
+    except Exception:
+        return {}
+    return {k: {e["date"]: e["title"] for e in (v.get("events") or [])}
+            for k, v in raw.items()}
+
+
+def uk_division(lat, lon):
+    """Which bank holiday calendar a forecourt keeps. Approximate, from its
+    coordinates, because the statutory record gives no other location.
+
+    The Anglo-Scottish border runs from about 54.99N at 3.05W in the west to
+    55.80N at 2.03W in the east, so a straight line through those two points
+    puts Gretna in Scotland and Carlisle in England, and Berwick in England
+    and Coldstream in Scotland. It is wrong for anyone filling up on the very
+    tip of the Mull of Kintyre, where no forecourt exists.
+    """
+    if lon < -5.45 and lat < 55.35:
+        return "northern-ireland"
+    if lat >= 54.99 + (lon + 3.05) * 0.7941:
+        return "scotland"
+    return "england-and-wales"
+
+
+def ff_bank_holiday(st, when, holidays=None):
+    """The name of the bank holiday in force where this forecourt stands,
+    or None. Separate from the hours lookup so it can be reported."""
+    if holidays is None:
+        holidays = bank_holidays()
+    if not holidays or st.get("lat") is None:
+        return None
+    div = uk_division(st["lat"], st["lon"])
+    return (holidays.get(div) or {}).get(when.strftime("%Y-%m-%d"))
+
+
+def ff_row(st, when, holidays=None):
+    """Which row of the statutory timetable applies on this date.
+
+    Operators publish a separate bank holiday row and most of them use it.
+    Reading the weekday row on Christmas Day sends someone to a locked
+    forecourt with the tank on the pin, so the holiday row wins when there
+    is one and it says something.
+    """
+    if ff_bank_holiday(st, when, holidays):
+        bh = st["ff_hours"].get("bank_holiday") or {}
+        if bh.get("all_day") or (bh.get("open") and bh.get("close")):
+            return bh
+    return st["ff_hours"][FF_DAYS[when.weekday()]]
+
+
+def ff_open_at(st, when, holidays=None):
     """True, False or None. Uses the statutory per-day hours."""
     if st.get("temp_closed"):
         return False
-    h = st["ff_hours"][FF_DAYS[when.weekday()]]
+    h = ff_row(st, when, holidays)
     if h["all_day"]:
         return True
     if not h["open"] or not h["close"]:
@@ -929,8 +1390,8 @@ def ff_open_at(st, when):
     return start <= now < end
 
 
-def ff_closes_at(st, when):
-    h = st["ff_hours"][FF_DAYS[when.weekday()]]
+def ff_closes_at(st, when, holidays=None):
+    h = ff_row(st, when, holidays)
     if h["all_day"] or not h["close"]:
         return None
     return h["close"][:5]
@@ -1290,7 +1751,8 @@ def build_plan(o):
             "hits": [], "incident_error": None, "blocked": False,
             "scored": [], "source": None, "pick": None, "cheaper": None, "later": 0}
 
-    hits, err = incidents_on_route(plan["roads"], r["coords"])
+    hits, err = incidents_on_route(plan["roads"], r["coords"],
+                                   road_points=r.get("road_points"))
     plan["hits"], plan["incident_error"] = hits or [], err
     plan["blocked"] = any(i["rank"] <= 1 for i in (hits or []))
 
@@ -1354,11 +1816,15 @@ def build_plan(o):
             continue
         eta = depart + timedelta(hours=total_hours * (along / total_miles))
         if st.get("source") == "fuelfinder":
-            is_open, shuts = ff_open_at(st, eta), ff_closes_at(st, eta)
+            hol = plan.setdefault("_holidays", bank_holidays())
+            bh = ff_bank_holiday(st, eta, hol)
+            is_open, shuts = ff_open_at(st, eta, hol), ff_closes_at(st, eta, hol)
         else:
+            bh = None
             is_open, shuts = parse_hours(st.get("hours"), eta), closes_at(st.get("hours"), eta)
+
         scored.append({**st, "along": along, "off_route": st.get("off_route", best_d),
-                       "eta": eta, "open": is_open, "shuts": shuts})
+                       "eta": eta, "open": is_open, "shuts": shuts, "bank_holiday": bh})
     scored.sort(key=lambda s: -s["along"])
     plan["scored"] = scored
     if getattr(o, "verify", False) and plan["source"] == "fuelfinder":
@@ -1413,6 +1879,7 @@ def plan_json(plan):
     def stop(s):
         return {"name": s["name"], "mile": round(s["along"], 1), "eta": s["eta"].strftime("%H:%M"),
                 "open": s["open"], "shuts": s["shuts"], "phone": s.get("phone", ""),
+                "bank_holiday": s.get("bank_holiday"),
                 "off_route": round(s.get("off_route", 0), 1), "toilets": bool(s.get("toilets")),
                 "price_e10": s.get("prices", {}).get("E10")}
     return {
@@ -1433,8 +1900,32 @@ def plan_json(plan):
     }
 
 
+def finish(o, args, plan, W):
+    """The handout and the privacy report.
+
+    These used to sit at the bottom of the printout, after two early returns.
+    So asking for --out plan.html on a journey you had the fuel for wrote no
+    file and said nothing about it, and --privacy reported nothing at all.
+    Every exit runs through here now.
+    """
+    if o.out:
+        write_plan(o.out, plan)
+        print(f"\n  Phone handout written to {o.out}")
+        print("  AirDrop or email it to yourself. It needs no signal.")
+    if getattr(args, "privacy", False) or LEAKED:
+        print("\n" + "-" * 68)
+        if LEAKED:
+            print("  LEFT THIS MACHINE THIS RUN:")
+            for l in LEAKED:
+                print(f"    {l}")
+        else:
+            print("  NOTHING ABOUT THIS JOURNEY LEFT THIS MACHINE.")
+        print("-" * 68)
+    print(W + "\n")
+
+
 def main():
-    global OSRM_BASE
+    global OSRM_BASE, GH_BASE
     p = argparse.ArgumentParser(description="Will I make it, and will it be open when I get there?")
     p.add_argument("--from", dest="origin", required=True)
     p.add_argument("--to", dest="dest", required=True)
@@ -1456,6 +1947,7 @@ def main():
                    help="GraphHopper URL for live rerouting, e.g. http://localhost:8989")
     args = p.parse_args()
     OSRM_BASE = args.osrm.rstrip("/")
+    GH_BASE = args.gh.rstrip("/") if args.gh else None
 
     o = Opts(args.origin, args.dest, args.tank, args.mpg, args.fuel, args.reserve,
              args.depart, args.detour, args.units, args.offline, args.out, args.verify, args.gh)
@@ -1463,7 +1955,14 @@ def main():
     plan = build_plan(o)
 
     if args.json:
-        print(json.dumps(plan_json(plan), indent=2))
+        # --out still has to write the file, and the privacy accounting goes
+        # into the document instead of onto stdout, so the JSON stays JSON.
+        if o.out:
+            write_plan(o.out, plan)
+        out = plan_json(plan)
+        out["handout"] = o.out or None
+        out["left_this_machine"] = list(LEAKED)
+        print(json.dumps(out, indent=2))
         return
 
     W = "=" * 68
@@ -1502,7 +2001,7 @@ def main():
     if plan["makes_it"]:
         print(f"\n  VERDICT: you make it with {plan['spare']:.0f} miles to spare.")
         print("  No fuel stop needed. Enjoy the drive.")
-        print(W + "\n")
+        finish(o, args, plan, W)
         return
 
     print(f"\n  VERDICT: you run to reserve {-plan['spare']:.0f} miles short.")
@@ -1512,11 +2011,14 @@ def main():
 
     scored = plan["scored"]
     print("\n" + "-" * 68)
+    bh = {s["bank_holiday"] for s in scored if s.get("bank_holiday")}
+    if bh:
+        print(f"  {' and '.join(sorted(bh))}. Holiday opening hours are in use below.")
     print(f"  REACHABLE STOPS, furthest first ({len(scored)} within range)")
     print("-" * 68)
     if not scored:
         print("  Nothing on the route within your range. Fuel before you set off.")
-        print(W + "\n")
+        finish(o, args, plan, W)
         return
 
     for s in scored[:12]:
@@ -1536,6 +2038,7 @@ def main():
         extras = []
         if s["off_route"] > 0.6: extras.append(f"{s['off_route']:.1f} mi off route")
         if s.get("motorway"): extras.append("motorway services")
+        if s.get("bank_holiday"): extras.append(f"{s['bank_holiday']} hours")
         if s.get("toilets"): extras.append("toilets")
         if extras:
             print(f"            {', '.join(extras)}")
@@ -1585,21 +2088,7 @@ def main():
             print("     Pass --gh http://localhost:8989 to route around them.")
         print("     Otherwise use --detour 40 to test the fuel plan by hand.")
 
-    if o.out:
-        write_plan(o.out, plan)
-        print(f"\n  Phone handout written to {o.out}")
-        print("  AirDrop or email it to yourself. It needs no signal.")
-
-    if args.privacy or LEAKED:
-        print("\n" + "-" * 68)
-        if LEAKED:
-            print("  LEFT THIS MACHINE THIS RUN:")
-            for l in LEAKED:
-                print(f"    {l}")
-        else:
-            print("  NOTHING ABOUT THIS JOURNEY LEFT THIS MACHINE.")
-        print("-" * 68)
-    print(W + "\n")
+    finish(o, args, plan, W)
 
 
 if __name__ == "__main__":
