@@ -58,6 +58,16 @@ class Severity(unittest.TestCase):
                      ("maintenance works", "MaintenanceWorks")]:
             self.assertEqual(fr._rank(a), fr._rank(b), f"{a} vs {b}")
 
+    def test_croatia_reads_its_own_page_rather_than_its_menu(self):
+        """HAK's navigation is list items too. "Prohodnost cesta" and
+        "Vremenski uvjeti" are page labels, and 141 of them were being
+        filed as incidents until the parser required a road or a date."""
+        import inspect
+        src = inspect.getsource(fr.p_hak)
+        self.assertIn("otvoren", src, "a reopening must not read as a closure")
+        self.assertIn("trak", src, "Croatian marks the lane with trak")
+        self.assertIn("dionica", src, "and the carriageway with dionica")
+
     def test_the_five_feeds_that_got_this_wrong(self):
         """One case per country that shipped a wrong rank. Five so far, and
         every one of them was a closed lane reported as a closed road."""

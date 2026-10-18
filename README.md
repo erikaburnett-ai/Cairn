@@ -76,7 +76,7 @@ Measured on one 110-mile stretch of the A9:
 |---|---|
 | Range | works out where the tank hits your reserve |
 | Stops | every forecourt reachable before that, open at your arrival time |
-| Closures | live, from 18 national sources, matched to the roads you use |
+| Closures | live, from 19 national sources, matched to the roads you use |
 | Fuel data | five national registers: Britain, France, Spain, Portugal, Italy. 53,965 forecourts |
 | Bank holidays | the statutory holiday timetable, per nation, where it differs |
 | Rerouting | locates a closure, blocks it, routes around it |
@@ -331,6 +331,7 @@ That second one reads OPEN on its weekday row.
 | Luxembourg | CITA | DATEX II v3.6, CC0 |
 | Slovenia | DARS | Atom feed, no key |
 | Spain | DGT | DATEX II, no key |
+| Croatia | HAK | their road status page, with their own diversions |
 | Italy | Autostrade per l'Italia's own map files | no key, their network only |
 | Netherlands | NDW | DATEX II, no key |
 | Norway | the service behind vegvesen.no's own map | no key, undocumented |
@@ -338,7 +339,7 @@ That second one reads OPEN on its weekday row.
 | Sweden | the Skane roadworks Denmark relays | roadworks only, southern tip only |
 | Finland | Digitraffic | DATEX II, no key |
 
-About 10,000 live incidents. 4.2% carry a type this tool cannot rank, and
+About 10,000 live incidents across 14 EU member states, 52% of them, holding 74% of the EU's people, plus the four UK nations and Norway. 4.2% carry a type this tool cannot rank, and
 nearly all of those are the Dutch feed's literal `other`.
 
 ### "Registration required" usually is not

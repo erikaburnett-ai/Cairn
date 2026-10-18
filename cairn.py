@@ -1216,6 +1216,92 @@ def p_vegvesen():
     return out
 
 
+# ----------------------------------------------------------------- Croatia
+
+def p_hak():
+    """HAK publish the state of the roads as a plain page, in Croatian.
+
+    No access point, no key, no JSON. A bold heading names the road and the
+    list items under it are its incidents, so the road carries down the page
+    until the next heading replaces it.
+
+    Worth the trouble for one thing nobody else gives: HAK print their own
+    recommended diversion, as "Obilazak: cvor Bisko (A1)-DC220-ZC6260-cvor
+    Split (A1)". That is the road authority's answer to the question this
+    tool spent the morning computing, written out by the people who closed
+    the road.
+    """
+    x = get_text("https://www.hak.hr/info/stanje-na-cestama")
+    if "<li>" not in (x or ""):
+        return []
+
+    # "zatvoren" is the word for shut, and it is the word for a shut lane
+    # too. Croatian makes the distinction with "trak", the lane. Reading the
+    # closure word alone and stopping there shuts the whole A1.
+    def kind(s):
+        s = s.lower()
+        scheduled = bool(re.search(r"zatvarat ce se|zatvarat \u0107e se", s)) or \
+                    bool(re.match(r"\s*\d{1,2}\.\s*/\s*\d{1,2}\.", s))
+        if "nesre" in s:
+            return "accident", scheduled
+        if "odron" in s:
+            return "obstruction", scheduled
+        if any(w in s for w in ("bura", "snijeg", "poledic", "magla", "vjetar")):
+            return "weather", scheduled
+        if "zatvor" in s or "zabran" in s:
+            if "trak" in s or "traka" in s:
+                return "lane closure", scheduled
+            if "dionica" in s or "cesta" in s or "most" in s or "tunel" in s:
+                return "road closure", scheduled
+            return "lane closure", scheduled
+        if "radov" in s:
+            return "roadworks", scheduled
+        if "usporen" in s or "koloni" in s or "zasto" in s:
+            return "queue", scheduled
+        if "pojacan" in s or "poja\u010dan" in s:
+            return "congestion", scheduled
+        return "incident", scheduled
+
+    out, road = [], ""
+    # bold headings and motorway spans both set the road for what follows
+    for m in re.finditer(r'<span class="motorway">(.*?)</span>|<b>(.*?)</b>|<li>(.*?)</li>', x, re.S):
+        span, bold, item = m.group(1), m.group(2), m.group(3)
+        if span or bold:
+            head = unescape(re.sub(r"<[^>]+>", " ", span or bold)).strip()
+            found = re.findall(r"\b((?:DC|ZC|A|D)\s?\d{1,4})\b", head.upper().replace("\u017d", "Z"))
+            if found:
+                road = re.sub(r"\s", "", found[0])
+            continue
+        if not item:
+            continue
+        txt = unescape(re.sub(r"<[^>]+>", " ", item))
+        txt = re.sub(r"\s+", " ", txt).strip()
+        if len(txt) < 12:
+            continue
+        low = txt.lower()
+        # HAK announce reopenings on the same page, in the same shape, and
+        # one of them carried a leftover diversion and read as a closure.
+        if re.match(r"\s*otvoren", low):
+            continue
+        typ, scheduled = kind(txt)
+        own = re.findall(r"\b((?:DC|A|D)\s?\d{1,3})\b", txt.upper())
+        # The page's own navigation is list items too: "Prohodnost cesta",
+        # "Vremenski uvjeti", "Ostali dogadaji". They carry no road, no date
+        # and no incident word, and 141 of them were being filed as incidents.
+        if typ == "incident" and not own and not re.search(r"\d{1,2}[.:]", txt):
+            continue
+        if scheduled:
+            typ = "roadworks" if typ in ("road closure", "lane closure") else typ
+        roads = {road} if road else set()
+        roads |= {re.sub(r"\s", "", r) for r in
+                  re.findall(r"\b((?:DC|A|D)\s?\d{1,3})\b", txt.upper())}
+        detour = (re.search(r"Obilazak:\s*([^.]{0,160})", txt) or [None, ""])[1].strip()
+        out.append(_norm("Croatia", f"{road + ': ' if road else ''}{txt[:90]}", typ,
+                         desc=(f"Diversion: {detour}. " if detour else "") + txt[:260],
+                         roads={r for r in roads if r}))
+    return out
+
+
 # ----------------------------------------------------------------- Denmark, and Sweden through it
 
 DK_GEOJSON = "https://storage.googleapis.com/trafikkort-data/geojson"
@@ -1431,6 +1517,9 @@ PROVIDERS = [
      "fn": lambda: p_datex2("Luxembourg",
          "https://cita.lu/info_trafic/datex/situationrecord36"),
      "note": "CITA, DATEX II v3.6, CC0"},
+
+    {"name": "Croatia", "box": (42.3, 46.6, 13.4, 19.5), "match": "roads",
+     "fn": p_hak, "note": "HAK road status page, in Croatian, with their own diversions"},
 
     {"name": "Slovenia", "box": (45.4, 46.9, 13.3, 16.6), "match": "roads",
      "fn": p_promet_si, "note": "DARS Atom feed, road numbers only, no coordinates"},
