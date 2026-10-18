@@ -50,9 +50,13 @@ forecourts.temporary_closure            forecourts.permanent_closure
 forecourts.public_phone_number          forecourts.amenities.customer_toilets
 ```
 
-8,139 forecourts, Open Government Licence v3.0, free to anybody who asks for
-them, and the per-day opening hours sitting inside every one of those records
-go almost entirely unread by the apps people actually use to find fuel.
+8,138 forecourts, Open Government Licence v3.0, free to anybody who asks for
+them. Most apps built on this dataset read the prices and leave the opening
+hours alone. Fuel Finder UK is the exception found so far: since 14 October
+2026 its route planner has estimated whether a station will be open when you
+arrive. So the hours are in use elsewhere. What has not turned up anywhere
+else is doing it offline, on hardware you own, alongside live closures from
+eighteen national road authorities.
 
 Measured on one 110-mile stretch of the A9:
 
@@ -68,7 +72,7 @@ Measured on one 110-mile stretch of the A9:
 | Range | works out where the tank hits your reserve |
 | Stops | every forecourt reachable before that, open at your arrival time |
 | Closures | live, from 18 national sources, matched to the roads you use |
-| Fuel data | five national registers: Britain, France, Spain, Portugal, Italy. 54,000 forecourts |
+| Fuel data | five national registers: Britain, France, Spain, Portugal, Italy. 53,965 forecourts |
 | Bank holidays | the statutory holiday timetable, per nation, where it differs |
 | Rerouting | locates a closure, blocks it, routes around it |
 | Diversion | the extra miles feed back into the fuel plan |
@@ -231,6 +235,10 @@ python3 fuelrun-serve.py --bind 0.0.0.0 --osrm http://localhost:8989 --gh http:/
 
 Put it behind Tailscale or WireGuard. Do not expose it to the open internet.
 
+Every count in this file was measured on 18 October 2026. Registers change
+daily as forecourts join and leave. Treat every figure here as a reading taken
+on one morning.
+
 ## Bank holidays
 
 All 8,138 registered forecourts publish a separate bank holiday timetable.
@@ -314,7 +322,7 @@ other two are just as open.
 
 | Country | Register | Forecourts | Hours | Prices |
 |---|---|---|---|---|
-| Great Britain | Fuel Finder, Motor Fuel Price (Open Data) Regulations 2025 | 8,139 | per day, plus a bank holiday row | 6 grades |
+| Great Britain | Fuel Finder, Motor Fuel Price (Open Data) Regulations 2025 | 8,138 | per day, plus a bank holiday row | 6 grades |
 | France | prix-carburants, Licence Ouverte | 9,799 | per day, plus a 24-hour card flag | 5 grades |
 | Spain | MITECO, Real Decreto-ley 6/2000 | 11,429 | per day, lunch closings included | 11 grades |
 | Portugal | DGEG | 3,118 | weekday, Saturday, Sunday and a holiday row | 3 grades |
@@ -468,7 +476,12 @@ reported loudly:
 
 ## Contributing
 
-Adding a country is the most useful thing anyone can do. Standard library only.
+Adding a country is the most useful thing anyone can do. `CONTRIBUTING.md` has
+the four checks to run on a feed before writing a parser, and the severity
+mistake that five countries have already caused.
+
+Standard library only, in both files. Read `CLA.md` and add your line to
+`CONTRIBUTORS.md` before your first pull request.
 
 ## Licence
 
