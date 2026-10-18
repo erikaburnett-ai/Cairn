@@ -1,4 +1,4 @@
-# Contributing to fuelrun
+# Contributing to Cairn
 
 Adding a country is the most useful thing anyone can do.
 
@@ -10,7 +10,7 @@ licence terms later.
 
 ## Adding a country
 
-One entry in `PROVIDERS` in `fuelrun.py`:
+One entry in `PROVIDERS` in `cairn.py`:
 
 ```python
 {"name": "Somewhere", "box": (lat_min, lat_max, lon_min, lon_max),
@@ -38,7 +38,7 @@ closed when one lane has cones on it.
 
 Severity is the part of this project that has shipped wrong most often. Check
 your mapping against real records from your feed, and add a test naming your
-country in `test_fuelrun.py`.
+country in `test_cairn.py`.
 
 ### "Registration required" usually is not
 
@@ -51,7 +51,7 @@ for the public route before writing a country off.
 ## House rules
 
 - **Standard library only.** No dependencies, in either file.
-- **Tests pass.** `python3 test_fuelrun.py` before you open the pull request.
+- **Tests pass.** `python3 test_cairn.py` before you open the pull request.
   `--live` hits the real feeds and is expected to break when a source changes.
 - **A silent failure is worse than a crash.** A scraped page that gets
   redesigned parses to nothing and raises nothing, and the tool then reports

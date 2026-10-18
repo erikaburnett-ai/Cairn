@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""fuelrun: will I make it, and will it be open when I get there?
+"""Cairn: will I make it, and will it be open when I get there?
 
 Answers the question a sat nav doesn't. Routes A to B, works out where you run
 dry, finds the fuel stops that are reachable BEFORE that, and checks whether
@@ -9,11 +9,11 @@ Data: OSRM for routing, OpenStreetMap via Overpass for fuel stations and their
 opening hours, Nominatim for place names. All free, no keys.
 
 Usage:
-  python3 fuelrun.py --from Inverness --to Thurso --tank 55 --mpg 42 --fuel 30
-  python3 fuelrun.py --from "Inverness" --to "Thurso" --depart 2026-10-18T17:30
+  python3 cairn.py --from Inverness --to Thurso --tank 55 --mpg 42 --fuel 30
+  python3 cairn.py --from "Inverness" --to "Thurso" --depart 2026-10-18T17:30
 """
 #
-#  fuelrun. Copyright (C) 2026 Erika Burnett.
+#  Cairn. Copyright (C) 2026 Erika Burnett.
 #
 #  This program is free software: you can redistribute it and/or modify it
 #  under the terms of the GNU Affero General Public License as published by
@@ -31,7 +31,7 @@ from html import unescape
 from datetime import date, datetime, timedelta
 from pathlib import Path
 
-UA = "fuelrun/0.1 (https://github.com/ ; prototype)"
+UA = "cairn/0.1 (https://github.com/ ; prototype)"
 # some public endpoints reject anything that doesn't look like a browser
 BROWSER_UA = ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
               "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36")
@@ -1152,7 +1152,7 @@ def p_vegvesen():
     It reads as a closure to any matcher that looks for the word.
     """
     body = get_text(NO_TRAFFIC + "?lang=en",
-                    headers={"X-System-ID": "fuelrun",
+                    headers={"X-System-ID": "Cairn",
                              "Accept": "application/vnd.svv.v2+json;charset=utf-8"})
     try:
         msgs = json.loads(body).get("trafficMessages") or []
@@ -2345,7 +2345,7 @@ def write_plan(path, plan):
 
     doc = f"""<!doctype html><html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Fuel plan</title><style>
+<title>Cairn</title><style>
 :root{{--bg:#101418;--fg:#eef2f5;--mut:#9aa7b2;--ok:#2e7d4f;--no:#8c2f2f;--maybe:#7a6a2a;--card:#192027}}
 *{{box-sizing:border-box}}
 body{{margin:0;padding:16px;background:#101418;color:#eef2f5;
@@ -3246,6 +3246,7 @@ def plan_json(plan):
         "range_miles": round(plan["range_miles"]), "makes_it": plan["makes_it"],
         "roads": sorted(plan["roads"]), "source": plan["source"],
         "blocked": plan["blocked"],
+        "escapes": plan.get("escapes") or [],
         "incidents": [{"type": i["type"], "title": i["title"], "direction": i["direction"],
                        "desc": i["desc"][:200], "since": i["start"], "rank": i["rank"],
                        "source": i["source"], "why": i.get("why", "")}

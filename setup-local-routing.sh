@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
-# Self-hosted routing for fuelrun, so journeys never leave the machine.
+# Self-hosted routing for Cairn, so journeys never leave the machine.
 #
 # Picks whichever engine the machine can actually run:
 #   Docker present  -> OSRM        (fastest routing, heaviest setup)
 #   Java present    -> GraphHopper (one JAR, no Docker needed)
 #   Neither         -> tells you what to install and stops
 #
-# Afterwards:  python3 fuelrun.py --osrm http://localhost:8989 --offline ...
+# Afterwards:  python3 cairn.py --osrm http://localhost:8989 --offline ...
 set -euo pipefail
 
 REGION="${1:-scotland}"            # scotland | england | wales | ireland | great-britain
@@ -40,7 +40,7 @@ CONF="config-$REGION.yml"
 GRAPH="graph-$REGION"
 
 echo "=============================================================="
-echo " fuelrun: self-hosted routing"
+echo " Cairn: self-hosted routing"
 echo " Region: $REGION"
 echo " Folder: $DIR"
 echo "=============================================================="

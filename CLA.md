@@ -1,6 +1,6 @@
 # Contributor Licence Agreement
 
-By submitting a contribution to fuelrun you agree to the terms below. They
+By submitting a contribution to Cairn you agree to the terms below. They
 exist so the project can stay free under the AGPL for everyone, while leaving
 its author free to make other arrangements later.
 
@@ -16,11 +16,11 @@ contribution anywhere else you like, for anything.
 You grant Erika Burnett a perpetual, worldwide, non-exclusive,
 royalty-free and irrevocable licence to use, reproduce, modify, publish,
 sublicense and distribute your contribution, on its own or as part of
-fuelrun, **under the AGPL-3.0 and under other licence terms as well.**
+Cairn, **under the AGPL-3.0 and under other licence terms as well.**
 
 That last clause is the whole point of this document, so it should be stated
-plainly. It means the author can offer fuelrun to a company under different
-terms from the AGPL if that is ever useful. It does not take fuelrun away from
+plainly. It means the author can offer Cairn to a company under different
+terms from the AGPL if that is ever useful. It does not take Cairn away from
 anyone: every version released under the AGPL stays under the AGPL, including
 yours, and nobody can revoke that.
 
@@ -31,7 +31,7 @@ to its own code. This keeps the option open. It does not oblige anyone to use it
 
 You grant everyone who receives your contribution a perpetual, worldwide,
 royalty-free licence to any patent claims you own that your contribution
-necessarily infringes. If you begin patent litigation alleging that fuelrun
+necessarily infringes. If you begin patent litigation alleging that Cairn
 infringes a patent, this patent licence ends for you.
 
 ## 4. You have the right to give it

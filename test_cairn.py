@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Tests for fuelrun. Standard library unittest, no pytest, no network.
+"""Tests for Cairn. Standard library unittest, no pytest, no network.
 
-    python3 test_fuelrun.py              # the pure logic, offline, fast
-    python3 test_fuelrun.py --live       # also hit every live provider
+    python3 test_cairn.py              # the pure logic, offline, fast
+    python3 test_cairn.py --live       # also hit every live provider
 
 The offline tests use fixtures copied from real responses, so a provider's
 HTML changing breaks the live test and leaves the logic tests honest.
@@ -11,7 +11,7 @@ HTML changing breaks the live test and leaves the logic tests honest.
 import json, sys, time, unittest
 from datetime import date, datetime
 
-import fuelrun as fr
+import cairn as fr
 
 LIVE = "--live" in sys.argv
 if LIVE:
@@ -438,7 +438,7 @@ class CacheKeys(unittest.TestCase):
 
     def test_keys_are_stable_across_processes(self):
         import subprocess as sp
-        code = ("import sys; sys.path.insert(0,'.'); import fuelrun as f, hashlib; "
+        code = ("import sys; sys.path.insert(0,'.'); import cairn as f, hashlib; "
                 "print(hashlib.sha1('abc'.encode()).hexdigest()[:16])")
         a = sp.run([sys.executable, "-c", code], capture_output=True, text=True).stdout
         b = sp.run([sys.executable, "-c", code], capture_output=True, text=True).stdout

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""fuelrun serve: the bit that lives on a box at home.
+"""Cairn serve: the bit that lives on a box at home.
 
 Runs on a machine you own. Polls the closure feeds on your own wifi, keeps
 the fuel dataset warm in memory, and answers your phone over your own VPN.
@@ -7,8 +7,8 @@ No cloud, no subscription, nobody in the middle.
 
 Standard library only. No pip install. Python 3.8 or later.
 
-    python3 fuelrun-serve.py                  # localhost only
-    python3 fuelrun-serve.py --bind 0.0.0.0   # reachable over your VPN
+    python3 cairn-serve.py                  # localhost only
+    python3 cairn-serve.py --bind 0.0.0.0   # reachable over your VPN
 
 Endpoints:
     /                  status page, readable on a phone
@@ -21,7 +21,7 @@ Endpoints:
     /health            JSON, for checking it's alive
 """
 #
-#  fuelrun. Copyright (C) 2026 Erika Burnett.
+#  Cairn. Copyright (C) 2026 Erika Burnett.
 #
 #  This program is free software: you can redistribute it and/or modify it
 #  under the terms of the GNU Affero General Public License as published by
@@ -40,7 +40,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs
 
 sys.path.insert(0, str(__import__("pathlib").Path(__file__).parent))
-import fuelrun as fr
+import cairn as fr
 
 REGISTERS = None          # set by --registers
 
@@ -123,7 +123,7 @@ def poller(closure_mins, fuel_hours):
 # ----------------------------------------------------------------- handler
 
 class H(BaseHTTPRequestHandler):
-    server_version = "fuelrun/0.1"
+    server_version = "cairn/0.1"
 
     def log_message(self, fmt, *a):
         pass  # the default logger is noisy and leaks query strings
@@ -214,14 +214,15 @@ class H(BaseHTTPRequestHandler):
                     tank=q.get("tank", 55), mpg=q.get("mpg", 42),
                     fuel=q.get("fuel", 50), reserve=q.get("reserve", 10),
                     depart=q.get("depart"), detour=q.get("detour", 0),
-                    units=q.get("units", "uk"), offline=q.get("offline") == "1")
+                    units=q.get("units", "uk"), offline=q.get("offline") == "1",
+                    escapes=q.get("escapes", 0))
         o.gh = q.get("gh") or GH_URL
         plan = fr.build_plan(o)
         if path == "/plan":
             self.send(200, json.dumps(fr.plan_json(plan), indent=1), "application/json")
         else:
             import tempfile, pathlib
-            f = pathlib.Path(tempfile.gettempdir()) / "fuelrun_plan.html"
+            f = pathlib.Path(tempfile.gettempdir()) / "cairn_plan.html"
             fr.write_plan(str(f), plan)
             self.send(200, f.read_bytes(), "text/html; charset=utf-8")
 
@@ -253,7 +254,7 @@ class H(BaseHTTPRequestHandler):
             f"<td>{c['title'][:52]}</td></tr>" for c in closures) or \
             "<tr><td colspan=3>nothing reported</td></tr>"
         return f"""<!doctype html><meta charset=utf-8>
-<meta name=viewport content="width=device-width,initial-scale=1"><title>fuelrun</title>
+<meta name=viewport content="width=device-width,initial-scale=1"><title>Cairn</title>
 <style>body{{background:#101418;color:#eef2f5;font:16px/1.5 system-ui,sans-serif;margin:0;padding:18px}}
 h1{{font-size:20px;margin:0 0 4px}} .m{{color:#9aa7b2;font-size:14px;margin-bottom:18px}}
 table{{border-collapse:collapse;width:100%;font-size:14px}} td{{padding:7px 8px;border-bottom:1px solid #222b33;vertical-align:top}}
@@ -262,7 +263,7 @@ code{{background:#192027;padding:2px 6px;border-radius:4px;font-size:13px}}
 .e{{margin-top:20px;color:#9aa7b2;font-size:14px;line-height:2}}
 .hw{{background:#3a1f1f;border-left:5px solid #ff8080;padding:10px 12px;border-radius:6px;
 margin:8px 0;font-size:14px;color:#ffd0d0}}</style>
-<h1>fuelrun</h1>
+<h1>Cairn</h1>
 <div class=m>up {h['uptime_seconds'] // 3600}h {(h['uptime_seconds'] % 3600) // 60}m &middot;
 {h['closures_known']} closures known &middot; {h['fuel_stations']} forecourts loaded &middot;
 {h['polls']} polls &middot; {h['requests_served']} requests<br>
@@ -273,7 +274,7 @@ closures updated {h['closures_updated'] or 'never'}
 <div class=e>
 <code>/live?roads=A9,A82&amp;near=56.8,-3.9</code> plain text for the car<br>
 <code>/plan?from=G1+1AB&amp;to=KW14+8AA&amp;fuel=60</code> JSON<br>
-<code>/plan.html?from=...&amp;to=...</code> the offline handout<br>
+<code>/plan.html?from=...&amp;to=...&amp;escapes=8</code> the offline handout<br>
 <code>/health</code> JSON
 </div>"""
 
@@ -281,7 +282,7 @@ closures updated {h['closures_updated'] or 'never'}
 # ----------------------------------------------------------------- main
 
 def main():
-    ap = argparse.ArgumentParser(description="fuelrun, served from a box you own")
+    ap = argparse.ArgumentParser(description="Cairn, served from a box you own")
     ap.add_argument("--port", type=int, default=8847)
     ap.add_argument("--bind", default="127.0.0.1",
                     help="127.0.0.1 is local only. Use 0.0.0.0 to reach it over your VPN.")
@@ -305,7 +306,7 @@ def main():
     # the public OSRM even with a local GraphHopper sitting right there.
     fr.GH_BASE = a.gh.rstrip("/") if a.gh else None
 
-    print(f"fuelrun serve")
+    print(f"Cairn serve")
     print(f"  listening   http://{a.bind}:{a.port}")
     print(f"  routing     {a.gh or fr.OSRM_BASE}")
     print(f"  providers   {', '.join(p['name'] for p in fr.PROVIDERS) or 'none registered'}")

@@ -40,4 +40,4 @@ fi
 echo
 echo "Done. $(du -h postcodes.csv | cut -f1), $(wc -l < postcodes.csv | tr -d ' ') postcodes."
 echo "Postcodes now resolve offline. Try:"
-echo "  python3 fuelrun.py --from 'G1 1AB' --to 'KW14 8AA' --offline"
+echo "  python3 cairn.py --from 'G1 1AB' --to 'KW14 8AA' --offline"

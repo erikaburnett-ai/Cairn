@@ -30,9 +30,14 @@
 ====================================================================
 ```
 
-# fuelrun
+# Cairn
 
-Will I make it, and will it be open when I get there?
+Will I make it, will it be open when I get there, and which way do I go if
+the road is shut?
+
+A cairn is a pile of stones on a hill path, left by somebody who walked it
+before you. No power, no signal, no account. It is simply there when the
+weather closes in and you cannot see the way.
 
 ## The gap
 
@@ -85,9 +90,9 @@ Measured on one 110-mile stretch of the A9:
 Python 3.8 or later. No dependencies.
 
 ```bash
-git clone https://github.com/YOURNAME/fuelrun
-cd fuelrun
-python3 fuelrun.py --from "Inverness" --to "Thurso" --tank 55 --mpg 42 --fuel 30
+git clone https://github.com/YOURNAME/cairn
+cd cairn
+python3 cairn.py --from "Inverness" --to "Thurso" --tank 55 --mpg 42 --fuel 30
 ```
 
 UK postcodes, offline forever, one download:
@@ -100,22 +105,22 @@ UK postcodes, offline forever, one download:
 
 ```bash
 # departure time matters: hours are checked against your real arrival
-python3 fuelrun.py --from "G1 1AB" --to "KW14 8AA" \
+python3 cairn.py --from "G1 1AB" --to "KW14 8AA" \
     --tank 55 --mpg 45 --fuel 60 --depart 2026-10-18T07:00
 
 # United States
-python3 fuelrun.py --from "Flagstaff, Arizona" --to "Las Vegas" \
+python3 cairn.py --from "Flagstaff, Arizona" --to "Las Vegas" \
     --units us --tank 14 --mpg 28 --fuel 45
 
 # route around live closures, on your own engine
-python3 fuelrun.py --from "G1 1AB" --to "LL55 4NY" --fuel 85 \
+python3 cairn.py --from "G1 1AB" --to "LL55 4NY" --fuel 85 \
     --gh http://localhost:8989
 
 # a page for your phone
-python3 fuelrun.py --from "G1 1AB" --to "KW14 8AA" --fuel 60 --out plan.html
+python3 cairn.py --from "G1 1AB" --to "KW14 8AA" --fuel 60 --out plan.html
 
 # leak nothing
-python3 fuelrun.py --from "G1 1AB" --to "KW14 8AA" --fuel 60 --offline --privacy
+python3 cairn.py --from "G1 1AB" --to "KW14 8AA" --fuel 60 --offline --privacy
 ```
 
 | Flag | |
@@ -146,7 +151,7 @@ shut, works out the way round each one, and bakes the answers into the
 offline page.
 
 ```bash
-python3 fuelrun.py --from "Belfast" --to "Cork" --fuel 60 \
+python3 cairn.py --from "Belfast" --to "Cork" --fuel 60 \
     --gh http://localhost:8991 --escapes 8 --out plan.html
 ```
 
@@ -271,7 +276,7 @@ works without Docker and without an admin password:
 For a box at home. Polls on your own network, answers your phone over your own VPN.
 
 ```bash
-python3 fuelrun-serve.py --bind 0.0.0.0 --osrm http://localhost:8989 --gh http://localhost:8989
+python3 cairn-serve.py --bind 0.0.0.0 --osrm http://localhost:8989 --gh http://localhost:8989
 ```
 
 | Endpoint | |
@@ -498,8 +503,8 @@ data comes through a mirror and the closures come from the motorway operator.
 ## Tests
 
 ```bash
-python3 test_fuelrun.py          # logic only, no network, instant
-python3 test_fuelrun.py --live   # also hits every live feed
+python3 test_cairn.py          # logic only, no network, instant
+python3 test_cairn.py --live   # also hits every live feed
 ```
 
 122 tests. The live ones break when a source changes its format, which is what
