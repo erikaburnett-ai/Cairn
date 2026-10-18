@@ -297,8 +297,8 @@ the answer cost them in privacy.
 It also attaches as an upstream to a gateway such as
 [ToolFunnel](https://github.com/Rendeverance/toolfunnel). That is worth
 having if you run many tools behind one policy. Its gate fires your own
-PreToolUse and PostToolUse hooks inside the gateway, so a rule travels
-between clients instead of living in one CLI's config, and it fails closed. Cairn does not need
+PreToolUse and PostToolUse hooks inside the gateway. A rule written once
+travels with you between clients, and the gate fails closed. Cairn does not need
 one, and keeping it that way is deliberate: a dependency on a gateway would
 end the no-dependencies promise above.
 
