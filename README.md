@@ -318,9 +318,10 @@ python3 cairn-serve.py --bind 0.0.0.0 --osrm http://localhost:8989 --gh http://l
 
 Put it behind Tailscale or WireGuard. Do not expose it to the open internet.
 
-Every count in this file was measured on 18 October 2026. Registers change
-daily as forecourts join and leave. Treat every figure here as a reading taken
-on one morning.
+Every count in this file was read from the registers in a single pass on
+18 October 2026. They change daily as forecourts join and leave, so the
+figures drift. `python3 -c "import cairn; print(sum(len(r['load']()) for r
+in cairn.FUEL_REGISTERS))"` gives today's.
 
 ## Bank holidays
 
@@ -409,12 +410,12 @@ other two are just as open.
 | Country | Register | Forecourts | Hours | Prices |
 |---|---|---|---|---|
 | Great Britain | Fuel Finder (Motor Fuel Price (Open Data) Regulations 2025), read through [matthewgall's hourly archive](https://github.com/matthewgall/fuelfinder-archive) | 8,138 | per day, plus a bank holiday row | 6 grades |
-| France | prix-carburants, Licence Ouverte | 9,799 | per day, plus a 24-hour card flag | 5 grades |
-| Spain | MITECO, Real Decreto-ley 6/2000 | 11,429 | per day, lunch closings included | 11 grades |
+| France | prix-carburants, Licence Ouverte | 9,805 | per day, plus a 24-hour card flag | 5 grades |
+| Spain | MITECO, Real Decreto-ley 6/2000 | 11,422 | per day, lunch closings included | 11 grades |
 | Portugal | DGEG | 3,118 | weekday, Saturday, Sunday and a holiday row | 3 grades |
 | Italy | MIMIT, through a daily mirror | 21,481 | none published | 2 grades |
 
-32,484 forecourts with hours published by law, and 21,481 more in Italy
+32,483 forecourts with hours published by law, and 21,481 more in Italy
 with prices and no hours at all. Everywhere else still falls
 back to OpenStreetMap. That knows where the stations are. Three times in
 four it has no opening hours for them.
@@ -422,7 +423,7 @@ four it has no opening hours for them.
 Two things the other registers teach that Britain's does not.
 
 France publishes `automate-24-24`. The kiosk shuts at eight and the card
-machine runs all night, so 5,592 of its 9,799 forecourts are usable at three
+machine runs all night, so 5,592 of its 9,805 forecourts are usable at three
 in the morning while their published staffed hours say closed. Reading the
 staffed hours alone drives somebody past a working pump.
 

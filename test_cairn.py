@@ -468,7 +468,7 @@ class McpServer(unittest.TestCase):
                            {"jsonrpc": "2.0", "id": 2, "method": "tools/list"})
         tools = out[1]["result"]["tools"]
         self.assertTrue(tools)
-        src = open(Path(fr.__file__).parent / "cairn-mcp.py").read()
+        src = (Path(fr.__file__).parent / "cairn-mcp.py").read_text()
         for t in tools:
             self.assertIn("description", t)
             self.assertIn("inputSchema", t)
