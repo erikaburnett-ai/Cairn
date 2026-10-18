@@ -495,6 +495,42 @@ class McpServer(unittest.TestCase):
         for line in out:
             self.assertEqual(line.get("jsonrpc"), "2.0")
 
+    def test_nonsense_numbers_are_refused(self):
+        """The question this tool answers is whether a tank will get you
+        there. mpg=420 from a typo must not return makes_it=true to somebody
+        who will run dry, so the server checks before Cairn is ever called."""
+        bad = [
+            ({"origin": "Inverness"}, "destination is required"),
+            ({"origin": "a", "destination": "b", "mpg": 420}, "mpg must be between"),
+            ({"origin": "a", "destination": "b", "fuel_percent": 500}, "fuel_percent must be"),
+            ({"origin": "a", "destination": "b", "mpg": "fast"}, "mpg must be a number"),
+            ({"origin": "a", "destination": "b", "units": "imperial"}, "units must be"),
+        ]
+        msgs = [{"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}}]
+        for n, (args, _) in enumerate(bad, start=2):
+            msgs.append({"jsonrpc": "2.0", "id": n, "method": "tools/call",
+                         "params": {"name": "plan_journey", "arguments": args}})
+        out, _ = self.talk(*msgs)
+        for n, (args, expect) in enumerate(bad, start=2):
+            r = next(m for m in out if m["id"] == n)["result"]
+            self.assertTrue(r["isError"], f"{args} was accepted")
+            self.assertIn(expect, r["content"][0]["text"], f"unhelpful message for {args}")
+
+    def test_a_bad_position_is_refused(self):
+        out, _ = self.talk({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}},
+                           {"jsonrpc": "2.0", "id": 2, "method": "tools/call",
+                            "params": {"name": "forecourts_near",
+                                       "arguments": {"at": "999,999"}}},
+                           {"jsonrpc": "2.0", "id": 3, "method": "tools/call",
+                            "params": {"name": "road_closures",
+                                       "arguments": {"roads": ["A9"], "near": "banana"}}})
+        for n in (2, 3):
+            r = next(m for m in out if m["id"] == n)["result"]
+            self.assertTrue(r["isError"])
+            self.assertNotIn("Traceback", r["content"][0]["text"])
+            self.assertNotIn("ValueError", r["content"][0]["text"],
+                             "a deliberate message should not carry the exception name")
+
     def test_bad_input_is_an_answer_not_a_crash(self):
         """Cairn exits on an impossible postcode. The server must survive it."""
         out, _ = self.talk({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}},

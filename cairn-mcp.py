@@ -126,15 +126,72 @@ TOOLS = [
 ARGS = None
 
 
+# ----------------------------------------------------------------- input checks
+
+# A client is supposed to validate arguments against the advertised schema.
+# Trusting that on this tool is the wrong call: the question it answers is
+# "will I make it", and mpg=420 from a typo returns makes_it=true to somebody
+# who will run dry. Nonsense is refused with a sentence saying what is wrong.
+RANGES = {
+    "tank_litres": (1, 1000), "mpg": (1, 300), "fuel_percent": (0, 100),
+    "reserve_percent": (0, 100), "escapes": (0, 40), "radius_miles": (0.1, 200),
+    "limit": (1, 200),
+}
+
+
+def need(args, *names):
+    missing = [n for n in names if args.get(n) in (None, "")]
+    if missing:
+        raise ValueError(f"{' and '.join(missing)} {'is' if len(missing) == 1 else 'are'} required")
+
+
+def number(args, name, default):
+    v = args.get(name, default)
+    try:
+        v = float(v)
+    except (TypeError, ValueError):
+        raise ValueError(f"{name} must be a number, got {v!r}")
+    lo, hi = RANGES[name]
+    if not (lo <= v <= hi):
+        raise ValueError(f"{name} must be between {lo} and {hi}, got {v:g}")
+    return v
+
+
+def point(s, name="at"):
+    try:
+        lat, lon = [float(x) for x in str(s).split(",")]
+    except ValueError:
+        raise ValueError(f"{name} must be 'lat,lon', got {s!r}")
+    if not (-90 <= lat <= 90 and -180 <= lon <= 180):
+        raise ValueError(f"{name} is not a real position: {lat}, {lon}")
+    return lat, lon
+
+
+def when_from(args, name="when"):
+    raw = args.get(name)
+    if not raw:
+        return None
+    try:
+        return datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
+    except ValueError:
+        raise ValueError(f"{name} must be an ISO 8601 time such as "
+                         f"2026-10-19T07:00, got {raw!r}")
+
+
 # ----------------------------------------------------------------- tools
 
 def t_plan_journey(a):
-    o = c.Opts(a["origin"], a["destination"],
-               tank=a.get("tank_litres", 55), mpg=a.get("mpg", 42),
-               fuel=a.get("fuel_percent", 50), reserve=a.get("reserve_percent", 10),
-               depart=a.get("depart"), units=a.get("units", "uk"),
+    need(a, "origin", "destination")
+    if a.get("units") not in (None, "uk", "us"):
+        raise ValueError("units must be 'uk' or 'us'")
+    when_from(a, "depart")                       # validated here, parsed by Cairn
+    o = c.Opts(str(a["origin"]), str(a["destination"]),
+               tank=number(a, "tank_litres", 55), mpg=number(a, "mpg", 42),
+               fuel=number(a, "fuel_percent", 50),
+               reserve=number(a, "reserve_percent", 10),
+               depart=a.get("depart"), units=a.get("units") or "uk",
                offline=bool(a.get("offline")), gh=ARGS.gh,
-               escapes=int(a.get("escapes", 0)))
+               escapes=int(number(a, "escapes", 0)))
     before = len(c.LEAKED)
     plan = c.build_plan(o)
     out = c.plan_json(plan)
@@ -149,22 +206,16 @@ def t_road_closures(a):
     if not roads:
         raise ValueError("give at least one road number")
     near = a.get("near")
-    point = None
-    if near:
-        try:
-            lat, lon = [float(x) for x in str(near).split(",")]
-            point = (lat, lon)
-        except ValueError:
-            raise ValueError("near must be 'lat,lon'")
+    at = point(near, "near") if near else None
 
     found, problems = [], []
     for pr in c.PROVIDERS:
         if pr.get("per_road"):
             continue                       # needs a route to know what to ask
-        if point and not c._inside(pr["box"], *point):
+        if at and not c._inside(pr["box"], *at):
             continue
         nb = pr.get("not_box")
-        if point and nb and c._inside(nb, *point):
+        if at and nb and c._inside(nb, *at):
             continue
         try:
             got = pr["fn"]()
@@ -182,26 +233,21 @@ def t_road_closures(a):
                               "rank": i["rank"], "desc": i["desc"][:300]})
     found.sort(key=lambda i: i["rank"])
     return {"asked": sorted(roads), "near": near,
-            "scoped_to_point": bool(point),
+            "scoped_to_point": bool(at),
             "count": len(found), "closures": found[:40],
             "warnings": problems or None,
-            "note": None if point else
+            "note": None if at else
                     "No position given, so road numbers may match the same "
                     "number in another country. Each item is tagged.",
             "checked_at": datetime.now().astimezone().isoformat(timespec="seconds")}
 
 
 def t_forecourts_near(a):
-    try:
-        lat, lon = [float(x) for x in str(a["at"]).split(",")]
-    except (ValueError, KeyError):
-        raise ValueError("at must be 'lat,lon'")
-    when = c.parse_when(a["when"]) if hasattr(c, "parse_when") and a.get("when") else None
-    if a.get("when") and when is None:
-        when = datetime.fromisoformat(a["when"])
-    when = when or datetime.now()
-    radius = float(a.get("radius_miles", 5))
-    limit = int(a.get("limit", 12))
+    need(a, "at")
+    lat, lon = point(a["at"])
+    when = when_from(a) or datetime.now()
+    radius = number(a, "radius_miles", 5)
+    limit = int(number(a, "limit", 12))
 
     # Same path build_plan uses: every national register whose box contains
     # the point, falling back to OpenStreetMap where none does. A point in
@@ -303,6 +349,11 @@ def handle(msg):
         except SystemExit as e:
             # Cairn exits on a bad postcode or an offline refusal. That is an
             # answer, so it returns as one instead of killing the server.
+            return reply(mid, {"content": [{"type": "text", "text": str(e)}],
+                               "isError": True})
+        except ValueError as e:
+            # Raised deliberately by the input checks above. The message is
+            # already written for a reader, so the exception name is noise.
             return reply(mid, {"content": [{"type": "text", "text": str(e)}],
                                "isError": True})
         except Exception as e:
