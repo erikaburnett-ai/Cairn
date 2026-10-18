@@ -85,15 +85,28 @@ def get_text(url, headers=None, ua=None):
         return ""
 
 
+# overpass.osm.ch was in this list and should never have been. It is a Swiss
+# regional instance: it holds Switzerland and nothing else, and it answers a
+# query about Norway with zero results in under a second, no error, no remark.
+# Tested 17 October 2026: 49 fuel stations around Bern, 0 around Trondheim,
+# where the global instances find 38. Any route that fell through to it got a
+# fast, confident, wrong answer that there is no fuel on the road.
+#
+# overpass.private.coffee, overpass.osm.jp, overpass.monicz.dev and
+# overpass.nchc.org.tw were tested the same day and answer this tool's own
+# query with an HTML error page or nothing at all.
+#
+# maps.mail.ru runs a working world instance and answered Norway correctly.
+# It is not in this list because using it would send the shape of somebody's
+# journey to a Russian server, and that is the user's call to make, not this
+# file's.
 OVERPASS = [
     "https://overpass-api.de/api/interpreter",
     "https://overpass.kumi.systems/api/interpreter",
-    "https://overpass.osm.ch/api/interpreter",
-    "https://overpass.private.coffee/api/interpreter",
 ]
 
 
-def overpass(query, tries=2):
+def overpass(query, tries=2, corroborate_empty=True):
     """Ask whichever public Overpass instance answers first.
 
     The main instance rate-limits, and on a five hundred mile corridor it
@@ -101,16 +114,37 @@ def overpass(query, tries=2):
     long backoff turns that into a run that sits there for four minutes
     saying nothing useful, so this walks a list of mirrors and gives up
     quickly on each. Raises only when every one of them has refused.
+
+    Zero results is the dangerous answer and gets treated as one. A timed-out
+    query comes back 200 with an empty element list and the reason tucked in
+    "remark"; a regional instance comes back 200 with an empty element list
+    and nothing at all. Either way the tool reads it as a plain statement
+    that there is no fuel on this road, which is the one wrong answer that
+    leaves somebody stood on a verge. So an empty answer has to be said twice
+    by two different servers before it counts. One mirror saying nothing, on
+    its own, is a failure and raises.
     """
-    last = None
+    last, empties = None, 0
     for base in OVERPASS:
         try:
-            return get(base + "?" + urllib.parse.urlencode({"data": query}),
-                       tries=tries, pause=3)
+            res = get(base + "?" + urllib.parse.urlencode({"data": query}),
+                      tries=tries, pause=3)
+            remark = res.get("remark") or ""
+            if remark and not res.get("elements"):
+                raise RuntimeError(f"said: {remark[:90]}")
+            if corroborate_empty and not res.get("elements"):
+                empties += 1
+                if empties < 2:
+                    raise RuntimeError("answered empty, asking somebody else")
+            return res
         except Exception as e:
             last = e
-            print(f"  {urllib.parse.urlparse(base).netloc} is busy, trying another",
+            print(f"  {urllib.parse.urlparse(base).netloc} {str(e)[:48]}, trying another",
                   file=sys.stderr)
+    if empties and empties < 2:
+        raise RuntimeError(
+            "only one Overpass mirror answered and it found nothing. That is "
+            "not the same as there being nothing: treat fuel as unknown here.")
     raise RuntimeError(f"every Overpass mirror refused: {last}")
 
 
@@ -307,6 +341,9 @@ def cumulative_miles(coords):
 
 # ----------------------------------------------------------------- fuel stops
 
+FUEL_CACHE_DAYS = 7
+
+
 def fuel_near_route(coords, radius_m=3000):
     """Overpass 'around' query along a thinned version of the route polyline."""
     step = max(1, len(coords) // 90)
@@ -315,7 +352,7 @@ def fuel_near_route(coords, radius_m=3000):
     # hashlib, because Python randomises str.__hash__ per process and a cache
     # key that changes every run is not a cache
     cache_key = CACHE / f"fuel_{hashlib.sha1(poly.encode()).hexdigest()[:16]}.json"
-    if cache_key.exists():
+    if cache_key.exists() and (time.time() - cache_key.stat().st_mtime) < FUEL_CACHE_DAYS * 86400:
         print("  (fuel data from local cache)", file=sys.stderr)
         return json.loads(cache_key.read_text())
 
@@ -338,7 +375,12 @@ def fuel_near_route(coords, radius_m=3000):
             "hours": t.get("opening_hours"),
             "lat": lat, "lon": lon,
         })
-    cache_key.write_text(json.dumps(stations))
+    # Never write an empty answer to disk. Overpass times out often enough
+    # on a long corridor, and a cached [] is a permanent, confident lie
+    # about where the fuel is. An empty result is a failed lookup until a
+    # mirror proves otherwise.
+    if stations:
+        cache_key.write_text(json.dumps(stations))
     return stations
 
 
@@ -471,6 +513,7 @@ SEVERITY = [
     ("lane closure", 2), ("lane closed", 2), ("ramp closed", 2),
     ("ramp closure", 2), ("slip road closed", 2), ("footway closure", 3),
     ("footway closed", 3), ("lanes closed", 2),
+    ("intermittent short term closures", 2),
     ("road closure", 0), ("roadclosed", 0), ("carriagewayclosed", 0),
     ("closure", 0), ("closed", 0),
     ("accident", 1), ("collision", 1), ("obstruction", 1), ("vehicle fire", 1),
@@ -1087,6 +1130,184 @@ def p_promet_si():
     return out
 
 
+# ----------------------------------------------------------------- Norway
+
+NO_TRAFFIC = "https://traffic-info.atlas.vegvesen.no/traffic-information/messages"
+
+
+def p_vegvesen():
+    """Norway's DATEX II feed wants an account. Their own traffic map does not.
+
+    The map talks to a service that publishes its OpenAPI spec openly at
+    /v3/api-docs, and the spec says the thing out loud: for internal use,
+    changes may occur at any time. So treat it the way the Irish GraphQL is
+    treated. It works today, it is nobody's promise, and the registry entry
+    says so.
+
+    Two traps in the data. 335 of 1,143 messages are scheduled for a date
+    that has not arrived and another 334 have finished, so the feed has to
+    be filtered to activityStatus before anything else: that is the Dutch
+    bug wearing a Norwegian hat. And "intermittentShortTermClosures" is a
+    road shut for ten minutes at a time while they blast, not a road shut.
+    It reads as a closure to any matcher that looks for the word.
+    """
+    body = get_text(NO_TRAFFIC + "?lang=en",
+                    headers={"X-System-ID": "fuelrun",
+                             "Accept": "application/vnd.svv.v2+json;charset=utf-8"})
+    try:
+        msgs = json.loads(body).get("trafficMessages") or []
+    except Exception:
+        return []
+
+    shut = {"roadClosed", "roadClosedForWinter"}
+    out = []
+    for m in msgs:
+        if m.get("activityStatus") not in ("active", "overdue"):
+            continue
+        loc = m.get("location") or {}
+        regs = {r.get("type") for r in (m.get("trafficRegulations") or [])}
+        ev = (m.get("trafficEvent") or {}).get("trafficEventType") or ""
+        impact = m.get("trafficImpact") or ""
+
+        if m.get("trafficManagement") in shut or regs & shut:
+            typ = "road closure"
+        elif regs & {"intermittentShortTermClosures", "delaysIntermittentShortTermClosures"}:
+            typ = "intermittent short term closures"
+        elif regs & {"oneLaneClosures", "moreLaneClosures"}:
+            typ = "lane closure"
+        elif "contraflow" in regs:
+            typ = "contraflow"
+        elif ev and ev not in ("roadworks", "mobileRoadworks", "resurfacingWork"):
+            typ = ev
+        elif impact in ("none", "small"):
+            # Their own judgement of how much this costs you. A resurfacing
+            # job with traffic lights is not an accident, and ranking all
+            # 1,037 roadworks alike buries the ones that are.
+            typ = "minor roadworks"
+        else:
+            typ = "roadworks"
+
+        # The feed writes county and national roads as F773 and R92. OSM,
+        # and so the router, writes Fv773 and Rv92. Same road, and a number
+        # match would quietly never fire. Carry both spellings.
+        roads = set()
+        for r in loc.get("roads") or []:
+            num, cat = (r.get("number") or "").upper(), (r.get("category") or "").upper()
+            if not re.fullmatch(r"[A-Z]{1,2}\d{1,4}", num):
+                continue
+            roads.add(num)
+            if cat in ("F", "R", "K") and num.startswith(cat):
+                roads.add(cat + "V" + num[1:])
+
+        pos = ((m.get("icon") or {}).get("position") or {}).get("coordinates") or []
+        lat = lon = None
+        if len(pos) == 2:
+            lon, lat = float(pos[0]), float(pos[1])
+
+        d = m.get("locationDescriptionDetails") or {}
+        title = d.get("simpleLocationDescription") or (m.get("trafficEvent") or {}).get(
+            "trafficEventDescription") or typ
+        desc = (m.get("trafficStatus") or {}).get("description") or ""
+        if m.get("activityStatus") == "overdue":
+            desc = (desc + ". Past its stated end time and still listed").strip(". ")
+        out.append(_norm("Norway", title[:70], typ, desc=desc[:200],
+                         since=(m.get("startTime") or "")[:16],
+                         roads=roads, lat=lat, lon=lon))
+    return out
+
+
+# ----------------------------------------------------------------- Denmark, and Sweden through it
+
+DK_GEOJSON = "https://storage.googleapis.com/trafikkort-data/geojson"
+
+DK_LAYERS = ["current-roadwork", "current-blocking-roadwork", "current-events",
+             "current-blocking-events", "current-other-traffic-announcements",
+             "current-strong-wind-traffic-announcements"]
+
+
+def _dk_layer(name, source):
+    """One Danish map layer. They publish every layer twice, .point and
+    .line, with the same features in both, so only the points are read."""
+    import xml.sax.saxutils as sx
+    try:
+        d = json.loads(get_text(f"{DK_GEOJSON}/{name}.point.json"))
+    except Exception:
+        return []
+    out = []
+    for f in d.get("features") or []:
+        pr = f.get("properties") or {}
+        if pr.get("future") == "true" or pr.get("suspended") == "true":
+            continue
+        desc = unescape(re.sub(r"<[^>]+>", " ", pr.get("description") or ""))
+        desc = re.sub(r"\s+", " ", unescape(desc)).strip()
+        title = unescape(pr.get("title") or "")
+        low = (title + " " + desc).lower()
+        klass = (pr.get("TrafficMan2_Type") or "").rsplit(".", 1)[-1]
+
+        # Danish separates the two the same way English does and this tool
+        # has now got it wrong in five languages. "Vejen er spærret" is the
+        # road. "Spor spærret" is one lane of it, coned off, with the rest
+        # of the carriageway running.
+        # The Swedish layer the Danes relay keeps its Danish title and its
+        # Swedish body text, so both get read and both languages are listed.
+        if "körfält avstäng" in low or "spor spærret" in low or "farbart spor" in low:
+            typ = "lane closure"
+        elif ("blocking" in name or "vejen er spærret" in low or "vej spærret" in low
+                or "vägen avstängd" in low or "väg avstängd" in low):
+            typ = "road closure"
+        elif klass == "Accident" or "uheld" in low or "olycka" in low:
+            typ = "accident"
+        elif klass == "PoorEnvironmentConditions" or "blæst" in low:
+            typ = "weather"
+        elif klass == "AnimalPresenceObstruction" or "dyr på vejen" in low:
+            typ = "obstruction"
+        elif klass == "MaintenanceWorks" or "vejarbejde" in low or "vägarbete" in low \
+                or "arbete" in low:
+            typ = "roadworks"
+        else:
+            typ = "incident"
+
+        g = f.get("geometry") or {}
+        c = g.get("coordinates") or []
+        lat = lon = None
+        if g.get("type") == "Point" and len(c) == 2:
+            lon, lat = float(c[0]), float(c[1])
+
+        # The Swedish layer has no header and its title is the Danish word
+        # for roadworks, so a closure on the E4 printed as "Vejarbejde i
+        # gang" and told you nothing about where it was. The description
+        # opens with the road and the two places it runs between.
+        head = unescape(pr.get("header") or "") or desc[:70] or title or typ
+        out.append(_norm(source, head[:70], typ, pr.get("direction") or "",
+                         desc[:200], (pr.get("beginPeriod") or "")[:16],
+                         None, lat, lon))
+    return out
+
+
+def p_vejdirektoratet():
+    """Denmark's own traffic map reads flat GeoJSON off a public bucket.
+
+    No key, no registration, no account. The bucket refuses a listing, so
+    the layer names come from their map's own bundle. Every layer is
+    published twice, as points and as lines, carrying the same features.
+    """
+    out = []
+    for name in DK_LAYERS:
+        out += _dk_layer(name, "Denmark")
+    return out
+
+
+def p_swedish_via_denmark():
+    """Sweden's own feed, Trafikverket, wants an account, and this tool does
+    not make accounts. The Danes publish the Swedish roadworks nearest them
+    on their own map, so this is the Oresund corner of Skane and nothing
+    else: roadworks only, no accidents, no live closures. It is better than
+    a blank map on the drive from Copenhagen to Malmo, and worse than
+    Sweden thinking it has coverage, so the registry note says both.
+    """
+    return _dk_layer("current-swedish-roadworks", "Sweden (relayed by Denmark)")
+
+
 PROVIDERS = [
     {"name": "Traffic Scotland", "not_box": IRELAND, "box": (54.6, 61.0, -8.7, -0.7), "match": "roads",
      "fn": p_traffic_scotland, "note": "scraped public page"},
@@ -1134,6 +1355,17 @@ PROVIDERS = [
      "fn": lambda: p_datex2_bulk("Netherlands",
          "https://opendata.ndw.nu/planningsfeed_wegwerkzaamheden_en_evenementen.xml.gz"),
      "note": "NDW open data, no key, 60k records streamed and filtered"},
+
+    {"name": "Norway", "box": (57.8, 71.3, 4.0, 31.2), "match": "coords",
+     "fn": p_vegvesen,
+     "note": "the service behind vegvesen.no's own map, undocumented and unpromised"},
+
+    {"name": "Denmark", "box": (54.5, 57.8, 8.0, 15.2), "match": "coords",
+     "fn": p_vejdirektoratet, "note": "vejdirektoratet's own map layers, open bucket, no key"},
+
+    {"name": "Sweden (relayed by Denmark)", "box": (55.3, 56.6, 12.6, 14.4), "match": "coords",
+     "fn": p_swedish_via_denmark,
+     "note": "Skane only, roadworks only. Trafikverket's own feed needs an account."},
 
     {"name": "Finland", "box": (59.5, 70.1, 19.0, 31.6), "match": "all",
      "fn": lambda: p_datex2("Finland",
@@ -1530,6 +1762,37 @@ def write_plan(path, plan):
     usable = [s for s in scored if s["open"] is True]
     pick = usable[0] if usable else None
 
+    # The handout used to print two Scottish phone numbers and "Closures:
+    # Traffic Scotland" on every page, including a run from Dublin to
+    # Belfast or Oslo to Trondheim. A card in a glovebox is only worth
+    # anything if the number on it rings somebody who can come out.
+    in_uk = any(n in plan.get("providers", [])
+                for n in ("Traffic Scotland", "National Highways",
+                          "Traffic Wales", "TrafficwatchNI"))
+    if in_uk:
+        phones = ('<a class="tel wide" href="tel:08000281414">Traffic Scotland '
+                  '&nbsp;0800 028 1414</a>\n'
+                  '<a class="tel wide" href="tel:03001235000">National Highways '
+                  '&nbsp;0300 123 5000</a>\n'
+                  '<a class="tel wide" href="sms:07380283600">Text roadside help '
+                  '&nbsp;0738 028 3600</a>\n'
+                  '<div class="note">Both lines are 24 hours. The text number is for '
+                  'roadside assistance when a phone call won\'t work. '
+                  'Emergencies are 999, and 112 also works.</div>')
+    else:
+        phones = ('<a class="tel wide" href="tel:112">Emergency &nbsp;112</a>\n'
+                  '<div class="note">112 reaches police, fire and ambulance in every '
+                  'country on this route, from any phone, in English. This tool has no '
+                  'breakdown number for the roads you are on today: put your own '
+                  'recovery service in your phone before you go.</div>')
+
+    used = sorted({i["source"] for i in hits}) or plan.get("providers", [])
+    sources = ("Fuel: UK Fuel Finder, Open Government Licence v3.0."
+               if plan.get("source") == "fuelfinder" else
+               "Fuel: OpenStreetMap, Open Database Licence."
+               if plan.get("source") else "Fuel: lookup failed for this route.")
+    sources += "<br>Closures: " + (", ".join(used) if used else "none covering this route")
+
     def card(s):
         if s["open"] is True:
             cls, status = "ok", (f"shuts {s['shuts']}" if s["shuts"] else "open 24 hours")
@@ -1571,6 +1834,16 @@ def write_plan(path, plan):
     if plan.get("incident_error"):
         ws = "".join(f"<li>{w}</li>" for w in plan["incident_error"].split("; "))
         warn_block = f"<h2>Trust this less</h2><ul class='late'>{ws}</ul>"
+
+    if plan.get("source") is None:
+        stops_block = ('<div class="warn">The fuel lookup failed when this page was '
+                       'made, so there are no stops on it. That is not the same as '
+                       'there being none on the road. Fill up before you set off.</div>')
+    elif not scored:
+        stops_block = ('<div class="warn">Nothing within range on this route. '
+                       'Fuel before you set off.</div>')
+    else:
+        stops_block = "".join(card(s) for s in scored[:14])
 
     rr = ""
     if plan.get("reroute"):
@@ -1629,20 +1902,16 @@ font-size:15px;margin-bottom:12px}}
 {rr}
 {late}
 <h2>Every stop in range</h2>
-{"".join(card(s) for s in scored[:14])}
+{stops_block}
 {inc}
 <h2>If you get a bar of signal</h2>
 <div class="warn">Closures below were live at <b>{datetime.now():%H:%M on %d %b}</b>.
 Anything that happened after that is not in here. On a long run, check once before you set off.</div>
 <div class="roads"><span class="t">Your roads today</span><br><b>{" &middot; ".join(sorted(roads)) if roads else "see the route"}</b><br>
 <small>These are the numbers to listen for on the radio.</small></div>
-<a class="tel wide" href="tel:08000281414">Traffic Scotland &nbsp;0800 028 1414</a>
-<a class="tel wide" href="tel:03001235000">National Highways &nbsp;0300 123 5000</a>
-<a class="tel wide" href="sms:07380283600">Text roadside help &nbsp;0738 028 3600</a>
-<div class="note">Both lines are 24 hours. The text number is for roadside assistance
-when a phone call won't work. Emergencies are always 999.</div>
+{phones}
 <div class="foot">Made {datetime.now():%d %b %Y, %H:%M}. Needs no signal.<br>
-Fuel data: UK Fuel Finder, Open Government Licence v3.0. Closures: Traffic Scotland.<br>
+{sources}<br>
 Opening hours change. Ring ahead when it matters.</div>
 </body></html>"""
     Path(path).write_text(doc)
@@ -1751,6 +2020,7 @@ def build_plan(o):
             "hits": [], "incident_error": None, "blocked": False,
             "scored": [], "source": None, "pick": None, "cheaper": None, "later": 0}
 
+    plan["providers"] = [pr["name"] for pr in providers_for(r["coords"])]
     hits, err = incidents_on_route(plan["roads"], r["coords"],
                                    road_points=r.get("road_points"))
     plan["hits"], plan["incident_error"] = hits or [], err
@@ -2011,6 +2281,19 @@ def main():
 
     scored = plan["scored"]
     print("\n" + "-" * 68)
+    # "Nothing within range" and "we could not find out" are different
+    # sentences and only one of them is safe to print as a fact. The source
+    # is None when every fuel lookup failed, and the old code printed the
+    # confident one either way, two lines under a note saying the lookup
+    # had failed.
+    if plan["source"] is None:
+        print("  FUEL STOPS: NOT KNOWN")
+        print("-" * 68)
+        print("  The fuel lookup failed for this route, so this run cannot tell")
+        print("  you where the stations are. That is not the same as there being")
+        print("  none. Fill up before you set off and try again on a connection.")
+        finish(o, args, plan, W)
+        return
     bh = {s["bank_holiday"] for s in scored if s.get("bank_holiday")}
     if bh:
         print(f"  {' and '.join(sorted(bh))}. Holiday opening hours are in use below.")

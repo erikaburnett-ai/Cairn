@@ -8,7 +8,7 @@ The offline tests use fixtures copied from real responses, so a provider's
 HTML changing breaks the live test and leaves the logic tests honest.
 """
 
-import sys, unittest
+import json, sys, unittest
 from datetime import datetime
 
 import fuelrun as fr
@@ -391,6 +391,150 @@ class CacheKeys(unittest.TestCase):
                 self.fail(f"unstable cache key: {line.strip()}")
 
 
+class EmptyIsNotAnAnswer(unittest.TestCase):
+    """overpass.osm.ch sat in the mirror list and holds Switzerland only. It
+    answered a Norwegian query with zero results in 0.8 seconds, no error and
+    no remark, and the tool printed "nothing on the route within your range".
+    Zero fuel stations is the one answer that strands somebody, so it now has
+    to be said twice by two different servers."""
+
+    def setUp(self):
+        self.real_get, self.real_mirrors = fr.get, fr.OVERPASS
+        fr.OVERPASS = ["https://one.invalid/api", "https://two.invalid/api"]
+
+    def tearDown(self):
+        fr.get, fr.OVERPASS = self.real_get, self.real_mirrors
+
+    def _answers(self, *bodies):
+        seen = []
+        def fake(url, **kw):
+            seen.append(url)
+            return bodies[min(len(seen) - 1, len(bodies) - 1)]
+        fr.get = fake
+        return seen
+
+    def test_one_mirror_saying_nothing_is_not_nothing(self):
+        seen = self._answers({"elements": []}, {"elements": [{"id": 1}]})
+        res = fr.overpass("x")
+        self.assertEqual(len(res["elements"]), 1)
+        self.assertEqual(len(seen), 2, "it took the first empty answer at face value")
+
+    def test_two_mirrors_agreeing_on_nothing_is_nothing(self):
+        self._answers({"elements": []})
+        self.assertEqual(fr.overpass("x")["elements"], [])
+
+    def test_a_lone_empty_answer_raises_rather_than_reports_no_fuel(self):
+        calls = []
+        def fake(url, **kw):
+            calls.append(url)
+            if len(calls) == 1:
+                return {"elements": []}
+            raise RuntimeError("mirror down")
+        fr.get = fake
+        with self.assertRaises(RuntimeError) as e:
+            fr.overpass("x")
+        self.assertIn("unknown", str(e.exception))
+
+    def test_a_timed_out_query_is_a_failure_not_a_result(self):
+        self._answers({"elements": [], "remark": "runtime error: Query timed out"},
+                      {"elements": [{"id": 2}]})
+        self.assertEqual(len(fr.overpass("x")["elements"]), 1)
+
+    def test_the_swiss_mirror_is_gone(self):
+        self.assertNotIn("osm.ch", " ".join(self.real_mirrors),
+                         "a Switzerland-only instance cannot answer for Europe")
+
+
+class FuelCache(unittest.TestCase):
+    """A cached empty station list is a permanent confident lie about where
+    the fuel is. One was found on disk for Oslo to Trondheim."""
+
+    def test_empty_results_are_never_written_to_disk(self):
+        import tempfile, pathlib as pl
+        real_cache, real_overpass = fr.CACHE, fr.overpass
+        fr.CACHE = pl.Path(tempfile.mkdtemp())
+        fr.overpass = lambda q, **kw: {"elements": []}
+        try:
+            coords = [(63.4, 10.4), (63.5, 10.5)]
+            self.assertEqual(fr.fuel_near_route(coords), [])
+            self.assertEqual(list(fr.CACHE.glob("fuel_*.json")), [],
+                             "an empty answer was cached and will outlive the outage")
+        finally:
+            fr.CACHE, fr.overpass = real_cache, real_overpass
+
+    def test_the_cache_expires(self):
+        self.assertTrue(hasattr(fr, "FUEL_CACHE_DAYS"))
+        src = open(fr.__file__).read()
+        i = src.index("def fuel_near_route")
+        self.assertIn("FUEL_CACHE_DAYS", src[i:i + 900],
+                      "fuel_near_route caches forever")
+
+
+class Norway(unittest.TestCase):
+    """Norway's own map service, and the two traps in it."""
+
+    def test_intermittent_closures_are_a_wait_not_a_wall(self):
+        # 87 live Norwegian records carry this. It is a road shut for ten
+        # minutes at a time while they blast. Any matcher looking for the
+        # word "closure" calls it a shut motorway.
+        self.assertEqual(fr._rank("intermittentShortTermClosures"), 2)
+        self.assertEqual(fr._rank("delaysIntermittentShortTermClosures"), 2)
+        self.assertLess(fr._rank("roadClosed"), fr._rank("intermittentShortTermClosures"))
+
+    def test_county_road_spellings_both_survive(self):
+        # The feed writes F773 and R92. OSM, and so the router, writes Fv773
+        # and Rv92. Matching one spelling means never matching at all.
+        i = fr._norm("Norway", "x", "roadworks", roads={"F773", "FV773", "R92", "RV92"})
+        self.assertEqual(i["roads"], {"F773", "FV773", "R92", "RV92"})
+
+
+
+class DanishAndSwedish(unittest.TestCase):
+    """Denmark publishes in Danish, and the Swedish layer it relays keeps a
+    Danish title with a Swedish body. Five languages have now had the same
+    lane-versus-road mistake made in them."""
+
+    def test_the_road_and_one_lane_of_it_are_different_sentences(self):
+        self.assertEqual(fr._rank("road closure"), 0)
+        self.assertEqual(fr._rank("lane closure"), 2)
+
+    def test_a_swedish_closure_is_not_filed_as_danish_roadworks(self):
+        # "Vejarbejde i gang" is the title on every record in that layer,
+        # closure or not. The Swedish body is where the truth is.
+        feat = {"properties": {"title": "Vejarbejde i gang",
+                               "description": "<p>Väg 969 i Sk\u00e5ne l\u00e4n. "
+                                              "V\u00e4gen avst\u00e4ngd. V\u00e4garbete.</p>",
+                               "future": "false", "suspended": "false"},
+                "geometry": {"type": "Point", "coordinates": [13.1, 55.6]}}
+        got = self._parse(feat)
+        self.assertEqual(got["type"], "road closure")
+        self.assertNotEqual(got["title"], "Vejarbejde i gang",
+                            "a closure printed as the Danish word for roadworks")
+
+    def test_one_swedish_lane_is_not_the_whole_road(self):
+        feat = {"properties": {"title": "Vejarbejde i gang",
+                               "description": "Ett k\u00f6rf\u00e4lt avst\u00e4ngt.",
+                               "future": "false", "suspended": "false"},
+                "geometry": {"type": "Point", "coordinates": [13.1, 55.6]}}
+        self.assertEqual(self._parse(feat)["type"], "lane closure")
+
+    def test_planned_work_is_not_live_work(self):
+        feat = {"properties": {"title": "Planlagt vejarbejde", "description": "x",
+                               "future": "true", "suspended": "false"},
+                "geometry": {"type": "Point", "coordinates": [13.1, 55.6]}}
+        self.assertIsNone(self._parse(feat), "a future roadwork was reported as live")
+
+    def _parse(self, feature):
+        real = fr.get_text
+        fr.get_text = lambda *a, **k: json.dumps({"features": [feature]})
+        try:
+            got = fr._dk_layer("current-roadwork", "Denmark")
+        finally:
+            fr.get_text = real
+        return got[0] if got else None
+
+
+
 # ----------------------------------------------------------------- live
 
 @unittest.skipUnless(LIVE, "pass --live to hit the real feeds")
@@ -410,6 +554,9 @@ class LiveProviders(unittest.TestCase):
     def test_traffic_wales(self):      self.check(fr.p_traffic_wales)
     def test_trafficwatch_ni(self):    self.check(fr.p_trafficwatch_ni, 10)
     def test_tii_ireland(self):        self.check(fr.p_tii_ireland, 0)
+    def test_norway(self):             self.check(fr.p_vegvesen, 50)
+    def test_denmark(self):            self.check(fr.p_vejdirektoratet, 20)
+    def test_sweden_via_denmark(self): self.check(fr.p_swedish_via_denmark, 10)
 
     def test_fuel_finder_has_the_statutory_fields(self):
         rows = fr.load_fuelfinder()
