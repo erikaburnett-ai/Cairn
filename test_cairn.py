@@ -10,6 +10,7 @@ HTML changing breaks the live test and leaves the logic tests honest.
 
 import json, sys, time, unittest
 from datetime import date, datetime
+from pathlib import Path
 
 import cairn as fr
 
@@ -439,6 +440,69 @@ class EscapeRoutes(unittest.TestCase):
         self.assertIn("escapes_html", src)
         self.assertIn("geolocation", src, "the page must read GPS, which works unsignalled")
         self.assertNotIn("https://", src.split("escapes_html")[1][:3000])
+
+
+class McpServer(unittest.TestCase):
+    """stdout carries the protocol. Anything else printed there corrupts the
+    stream and the client reports a parse error with no explanation."""
+
+    @staticmethod
+    def talk(*messages):
+        import subprocess, json as j
+        from pathlib import Path as P
+        here = P(fr.__file__).parent
+        send = "\n".join(j.dumps(m) for m in messages) + "\n"
+        r = subprocess.run([sys.executable, str(here / "cairn-mcp.py")],
+                           input=send, capture_output=True, text=True, timeout=120)
+        return [j.loads(l) for l in r.stdout.splitlines() if l.strip()], r.stderr
+
+    def test_handshake(self):
+        out, _ = self.talk({"jsonrpc": "2.0", "id": 1, "method": "initialize",
+                            "params": {}})
+        self.assertEqual(out[0]["id"], 1)
+        self.assertIn("protocolVersion", out[0]["result"])
+        self.assertEqual(out[0]["result"]["serverInfo"]["name"], "cairn")
+
+    def test_every_tool_is_described_and_handled(self):
+        out, _ = self.talk({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}},
+                           {"jsonrpc": "2.0", "id": 2, "method": "tools/list"})
+        tools = out[1]["result"]["tools"]
+        self.assertTrue(tools)
+        src = open(Path(fr.__file__).parent / "cairn-mcp.py").read()
+        for t in tools:
+            self.assertIn("description", t)
+            self.assertIn("inputSchema", t)
+            self.assertIn(f'"{t["name"]}": t_', src,
+                          f"{t['name']} is advertised with no handler")
+
+    def test_a_notification_gets_no_reply(self):
+        """Replying to a notification is a protocol violation."""
+        out, _ = self.talk({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}},
+                           {"jsonrpc": "2.0", "method": "notifications/initialized"})
+        self.assertEqual(len(out), 1, "the server answered a notification")
+
+    def test_a_bad_call_returns_an_error_and_keeps_serving(self):
+        out, _ = self.talk({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}},
+                           {"jsonrpc": "2.0", "id": 2, "method": "tools/call",
+                            "params": {"name": "no_such_tool", "arguments": {}}},
+                           {"jsonrpc": "2.0", "id": 3, "method": "ping"})
+        self.assertIn("error", out[1])
+        self.assertEqual(out[2]["id"], 3, "the server stopped after a bad call")
+
+    def test_nothing_but_protocol_reaches_stdout(self):
+        out, err = self.talk({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}})
+        self.assertTrue(err.strip(), "the banner belongs on stderr")
+        for line in out:
+            self.assertEqual(line.get("jsonrpc"), "2.0")
+
+    def test_bad_input_is_an_answer_not_a_crash(self):
+        """Cairn exits on an impossible postcode. The server must survive it."""
+        out, _ = self.talk({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}},
+                           {"jsonrpc": "2.0", "id": 2, "method": "tools/call",
+                            "params": {"name": "road_closures", "arguments": {"roads": []}}},
+                           {"jsonrpc": "2.0", "id": 3, "method": "ping"})
+        self.assertTrue(out[1]["result"]["isError"])
+        self.assertEqual(out[2]["id"], 3, "the server died on bad input")
 
 
 class CacheKeys(unittest.TestCase):

@@ -274,6 +274,31 @@ works without Docker and without an admin password:
 --------------------------------------------------------------------
 ```
 
+## As an MCP server
+
+So an agent can ask Cairn a question directly, without being handed a shell.
+
+```json
+{"mcpServers": {"cairn": {
+   "command": "python3",
+   "args": ["/path/to/cairn/cairn-mcp.py", "--gh", "http://localhost:8989"]}}}
+```
+
+| Tool | |
+|---|---|
+| `plan_journey` | the full answer: range, stops with opening state, closures, diversions |
+| `road_closures` | live closures on named roads. Takes `near` so an Austrian A9 is not a Scottish one |
+| `forecourts_near` | stations at a point, with hours, prices and amenities |
+
+JSON-RPC 2.0 over stdio, standard library, no Node and no SDK. Every answer
+carries `left_this_machine`, so an agent acting for somebody can report what
+the answer cost them in privacy.
+
+It also attaches as an upstream to a gateway such as ToolFunnel, which is
+worth having if you run many tools behind one policy. Cairn does not need
+one, and keeping it that way is deliberate: a dependency on a gateway would
+end the no-dependencies promise above.
+
 ## Serve mode
 
 For a box at home. Polls on your own network, answers your phone over your own VPN.
