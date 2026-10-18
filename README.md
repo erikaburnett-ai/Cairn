@@ -127,12 +127,60 @@ python3 fuelrun.py --from "G1 1AB" --to "KW14 8AA" --fuel 60 --offline --privacy
 | `--detour` | extra miles, when rerouting is unavailable |
 | `--units` | `uk` or `us` |
 | `--gh` | GraphHopper URL for live rerouting |
+| `--escapes N` | work out the way round a closure at N points, before you leave |
 | `--osrm` | your own routing server |
 | `--offline` | refuse anything that would reveal a destination |
 | `--privacy` | report what left the machine |
 | `--verify` | second-source every stop against OpenStreetMap |
 | `--out` | write the offline page |
 | `--json` | machine-readable |
+
+## If the road ahead is shut
+
+The plan answers "will this journey work". It does not answer the question
+you have at eleven at night, on an unlit road, with a POLICE ROAD CLOSED sign
+across it and no signal. Which way now.
+
+`--escapes N` walks the route before you leave, pretends each of N points is
+shut, works out the way round each one, and bakes the answers into the
+offline page.
+
+```bash
+python3 fuelrun.py --from "Belfast" --to "Cork" --fuel 60 \
+    --gh http://localhost:8991 --escapes 8 --out plan.html
+```
+
+```
+If the road ahead is shut
+  mile 174 on M8
+  Come off at mile 159, rejoin at mile 189
+  M7 -> R433 -> L5559
+  +4 miles
+
+  mile 206 on M8
+  Come off at mile 191, rejoin at mile 221
+  N24 -> R670 -> R665
+  +9 miles
+```
+
+The page reads your phone's GPS, which works with no signal, and says which
+marked point you are nearest to. No part of the page touches a network, so it
+opens the same in Caithness as it does at home.
+
+Two things took getting right. Blocking half a mile around a point lets a
+parallel service road absorb it and the detour reads as nothing, so the block
+is the length of a real closed section. And the diversion is routed from a
+few miles before the closure to a few miles after, because routing origin to
+destination around the point hands back a whole different journey when what
+the driver wants is where to come off and where to rejoin. Irish and Highland
+junctions can be fifteen miles apart, so the window widens until it finds one.
+
+A point with no way round at any width is reported as exactly that. Being
+told before you leave that a closure there leaves you nowhere to go is worth
+more than any diversion.
+
+Needs a GraphHopper on your own machine, because it is one routing query per
+sample and nobody should aim that at a public server.
 
 ## Rerouting
 
@@ -454,7 +502,7 @@ python3 test_fuelrun.py          # logic only, no network, instant
 python3 test_fuelrun.py --live   # also hits every live feed
 ```
 
-60 tests. The live ones break when a source changes its format, which is what
+122 tests. The live ones break when a source changes its format, which is what
 they are for. Several exist because of a bug that shipped: five feeds reported
 a coned-off lane as a shut road, two early returns swallowed the `--out` file
 without saying so, and cached incidents kept a severity judgement that had

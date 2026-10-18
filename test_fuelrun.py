@@ -378,6 +378,59 @@ class EveryExit(unittest.TestCase):
         self.assertIn("LEFT THIS MACHINE", fin)
 
 
+class EscapeRoutes(unittest.TestCase):
+    """Worked out before departure so the offline page can answer the
+    question you have standing at a closed road with no signal."""
+
+    @staticmethod
+    def straight(miles=250, n=600):
+        """A north-south line, so cumulative miles are predictable."""
+        step = (miles / 69.0) / (n - 1)
+        coords = [(54.6 - i * step, -6.0) for i in range(n)]
+        return {"coords": coords, "miles": miles, "hours": miles / 55.0,
+                "roads": {"M8"}, "road_points": {"M8": [[c[0], c[1]] for c in coords[::9]]}}
+
+    def test_no_engine_means_no_escapes(self):
+        self.assertEqual(fr.escape_routes(self.straight(), None), [])
+
+    def test_a_short_hop_gets_none(self):
+        self.assertEqual(fr.escape_routes(self.straight(8), "http://localhost:1"), [])
+
+    def test_too_few_points_gets_none(self):
+        r = self.straight(250, 12)
+        self.assertEqual(fr.escape_routes(r, "http://localhost:1"), [])
+
+    def test_an_unreachable_engine_reports_trapped_never_silence(self):
+        """A routing engine that is down must not quietly produce an empty
+        list. Nothing on the page is indistinguishable from nothing is shut."""
+        got = fr.escape_routes(self.straight(), "http://127.0.0.1:9", samples=3)
+        self.assertEqual(len(got), 3)
+        for e in got:
+            self.assertTrue(e["trapped"])
+            self.assertTrue(e["why"], "a trapped point must say why")
+
+    def test_samples_stay_clear_of_both_ends(self):
+        got = fr.escape_routes(self.straight(), "http://127.0.0.1:9", samples=5)
+        miles = [e["mile"] for e in got]
+        self.assertGreater(min(miles), 5.0, "a sample sat too near the start")
+        self.assertLess(max(miles), 245.0, "a sample sat too near the end")
+        self.assertEqual(miles, sorted(miles), "escapes must read in travel order")
+
+    def test_a_closure_block_is_the_size_of_a_closure(self):
+        """Half a mile lets a parallel service road absorb it and the detour
+        reads as nothing, so the default has to be bigger than that."""
+        import inspect
+        sig = inspect.signature(fr.escape_routes)
+        self.assertGreaterEqual(sig.parameters["radius_miles"].default, 1.0)
+
+    def test_the_handout_carries_them_without_a_network(self):
+        import inspect
+        src = inspect.getsource(fr.write_plan)
+        self.assertIn("escapes_html", src)
+        self.assertIn("geolocation", src, "the page must read GPS, which works unsignalled")
+        self.assertNotIn("https://", src.split("escapes_html")[1][:3000])
+
+
 class CacheKeys(unittest.TestCase):
     """Python randomises str.__hash__ per process. A cache key built from it
     changes every run, so the cache silently never hits and every invocation

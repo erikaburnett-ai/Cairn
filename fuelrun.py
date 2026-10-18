@@ -2169,10 +2169,57 @@ def closes_at(spec, when):
 def write_plan(path, plan):
     """A single self-contained page for the passenger's phone.
 
-    No network, no scripts, no fonts. Opens on a dead signal in Caithness.
+    No network and no fonts. Opens on a dead signal in Caithness.
+
+    One inline script, for the escape routes: it reads the phone's GPS,
+    which works with no signal, and says which marked point you are nearest
+    to. Everything on the page is readable without it.
     """
     args = plan["opts"]
     total_miles, total_hours = plan["total_miles"], plan["total_hours"]
+    # Escape routes. The one part of this page that is for the moment you
+    # are already stopped at a closed road, so it comes before everything
+    # else and it uses the phone's GPS, which works with no signal at all.
+    esc = plan.get("escapes") or []
+    escapes_html = ""
+    if esc:
+        rows = []
+        for n, e in enumerate(esc):
+            if e.get("trapped"):
+                rows.append(
+                    f'<div class="esc bad" data-lat="{e["lat"]}" data-lon="{e["lon"]}">'
+                    f'<b>mile {e["mile"]:.0f}{" on " + e["road"] if e["road"] else ""}</b>'
+                    f'<div class="no">No way round this one. Turn back, or wait it out.</div></div>')
+                continue
+            via = " &rarr; ".join(e["via"]) or "unnumbered local roads"
+            rows.append(
+                f'<div class="esc" data-lat="{e["lat"]}" data-lon="{e["lon"]}">'
+                f'<b>mile {e["mile"]:.0f}{" on " + e["road"] if e["road"] else ""}</b>'
+                f'<div class="go">Come off at mile {e["leave_mile"]:.0f}, '
+                f'rejoin at mile {e["rejoin_mile"]:.0f}</div>'
+                f'<div class="via">{via}</div>'
+                f'<div class="cost">+{e["extra_miles"]:.0f} miles</div></div>')
+        escapes_html = (
+            '<h2>If the road ahead is shut</h2>'
+            '<div class="warn">Worked out before you left. These need no signal. '
+            'Tap the button and the phone will say which one you are nearest to.</div>'
+            '<button id="whereami" onclick="locate()">Where am I?</button>'
+            '<div id="near"></div>'
+            + "".join(rows)
+            + '<script>function locate(){var n=document.getElementById("near");'
+              'if(!navigator.geolocation){n.textContent="This phone will not give a position.";return;}'
+              'n.textContent="Looking...";'
+              'navigator.geolocation.getCurrentPosition(function(p){'
+              'var la=p.coords.latitude,lo=p.coords.longitude,best=null,bd=1e9;'
+              'document.querySelectorAll(".esc").forEach(function(d){'
+              'var y=(d.dataset.lat-la)*69,x=(d.dataset.lon-lo)*69*Math.cos(la*Math.PI/180);'
+              'var m=Math.sqrt(x*x+y*y);d.classList.remove("here");'
+              'if(m<bd){bd=m;best=d;}});'
+              'if(best){best.classList.add("here");best.scrollIntoView({block:"center"});'
+              'n.textContent="Nearest marked point: "+bd.toFixed(1)+" miles away.";}'
+              '},function(){n.textContent="No position. GPS can take a minute outdoors.";},'
+              '{enableHighAccuracy:true,timeout:30000});}</script>')
+
     depart, range_miles = plan["depart"], plan["range_miles"]
     scored, hits = plan["scored"], plan["hits"]
     vol, usable_vol, roads = plan["vol"], plan["usable_vol"], plan["roads"]
@@ -2322,6 +2369,19 @@ ul{{padding-left:20px;margin:0}} li{{margin-bottom:9px}} small{{color:#9aa7b2}}
 .warn{{background:#2a2317;border-left:5px solid #7a6a2a;padding:12px 14px;border-radius:8px;
 font-size:15px;margin-bottom:12px}}
 .roads{{background:#192027;border-radius:8px;padding:12px 14px;margin-bottom:12px}}
+.esc{{background:#192027;border-left:5px solid #5a7a9a;border-radius:8px;padding:11px 14px;
+margin-bottom:9px}}
+.esc.bad{{border-left-color:#ff8080}}
+.esc.here{{background:#20303c;border-left-color:#ffd24a;box-shadow:0 0 0 2px #ffd24a}}
+.esc b{{font-size:15px;color:#9fc6e8}}
+.esc.bad b{{color:#ff8080}}
+.go{{margin-top:4px;font-size:15px}}
+.via{{margin-top:3px;font-size:17px;font-weight:700;letter-spacing:.3px}}
+.cost{{margin-top:3px;font-size:13px;color:#9aa7b2}}
+.no{{margin-top:4px;font-size:15px;color:#ffd0d0}}
+#whereami{{width:100%;padding:16px;font-size:18px;font-weight:700;background:#2b4a63;
+color:#eef2f5;border:0;border-radius:10px;margin-bottom:10px}}
+#near{{font-size:14px;color:#9aa7b2;margin-bottom:10px;min-height:1em}}
 .roads .t{{font-size:13px;color:#9aa7b2;text-transform:uppercase;letter-spacing:.08em}}
 .tel.wide{{display:block;margin:0 0 9px;text-align:center;padding:14px;font-size:17px;font-weight:600}}
 .note{{color:#9aa7b2;font-size:14px;margin-top:10px}}
@@ -2335,6 +2395,7 @@ font-size:15px;margin-bottom:12px}}
 <h2>Every stop in range</h2>
 {stops_block}
 {inc}
+{escapes_html}
 <h2>If you get a bar of signal</h2>
 <div class="warn">Closures below were live at <b>{datetime.now():%H:%M on %d %b}</b>.
 Anything that happened after that is not in here. On a long run, check once before you set off.</div>
@@ -2655,7 +2716,7 @@ def closure_areas(points, radius_miles=0.45):
     return feats
 
 
-def reroute_avoiding(a, b, points, gh_url, profile="car"):
+def reroute_avoiding(a, b, points, gh_url, profile="car", radius_miles=0.45):
     """Ask GraphHopper for a route that physically cannot enter the closures.
 
     Custom models go in the body of a POST and areas are GeoJSON polygons.
@@ -2666,13 +2727,14 @@ def reroute_avoiding(a, b, points, gh_url, profile="car"):
     """
     if not points:
         return None
-    areas = closure_areas(points)
+    areas = closure_areas(points, radius_miles)
     body = {
         "points": [[a["lon"], a["lat"]], [b["lon"], b["lat"]]],
         "profile": profile,
         "points_encoded": False,
         "instructions": True,
         "ch.disable": True,
+        "details": ["street_ref"],
         "custom_model": {
             "priority": [{"if": f"in_{k}", "multiply_by": "0"} for k in areas],
             "areas": {"type": "FeatureCollection", "features": list(areas.values())},
@@ -2694,11 +2756,112 @@ def reroute_avoiding(a, b, points, gh_url, profile="car"):
         raise RuntimeError("no route avoids those closures")
     pth = paths[0]
     coords = [(c[1], c[0]) for c in pth["points"]["coordinates"]]
+    roads = []
+    for lo, hi, ref in (pth.get("details") or {}).get("street_ref", []):
+        for one in re.split(r"[;,/ ]+", (ref or "").upper()):
+            if re.fullmatch(ROAD_RE, one) and one not in roads:
+                roads.append(one)
     return {"miles": pth["distance"] * MILES_PER_METRE,
             "hours": pth["time"] / 3600000.0,
-            "coords": coords,
+            "coords": coords, "roads": roads,
             "blocked": len(points)}
 
+
+
+# ----------------------------------------------------------------- escape routes
+
+def escape_routes(route, gh_url, samples=10, radius_miles=1.6):
+    """Work out, before you leave, where a closure would actually trap you.
+
+    The plan this tool writes answers "will this journey work". It does not
+    answer the question you have at eleven at night on an unlit road with a
+    POLICE ROAD CLOSED sign across it and no signal: which way now.
+
+    So this walks the route, pretends each sampled point is shut, and asks
+    the local engine for the way round. The answers are baked into the
+    offline page before you leave, so on the road the page can say the A9 is
+    shut at Dunkeld, come off at mile 71, rejoin at mile 81, via the A822.
+
+    Two things that took a while to get right. Blocking half a mile lets a
+    parallel service road absorb it and the detour reads as nothing, so the
+    block is the length of a real closed section. And the diversion is
+    routed from a few miles before to a few miles after, because routing
+    origin to destination around the point answers a different question and
+    returns a whole alternative journey.
+
+    Needs a GraphHopper on this machine. It is one routing query per sample
+    and nobody should point that at a public server.
+    """
+    from concurrent.futures import ThreadPoolExecutor
+    # Irish and Highland motorway junctions can be fifteen miles apart, so a
+    # diversion often cannot start and finish inside a ten mile window. Widen
+    # until one is found. Needing the widest is itself worth reporting.
+    WINDOWS = (5.0, 15.0, 30.0)
+    coords = route["coords"]
+    if len(coords) < 40 or not gh_url:
+        return []
+    cum = cumulative_miles(coords)
+    total = cum[-1]
+    if total < 20:
+        return []
+
+    at = lambda m: min(range(len(cum)), key=lambda k: abs(cum[k] - m))
+    edge = max(6.0, min(12.0, total * 0.12))
+    span = total - 2 * edge
+    wanted = [edge + i * span / max(1, samples - 1) for i in range(samples)]
+    picks = []
+    for m in wanted:
+        i = at(m)
+        if not picks or abs(cum[i] - cum[picks[-1]]) > 2.0:
+            picks.append(i)
+
+    def road_at(i):
+        """Which numbered road the route is on at this point."""
+        here, best, best_d = coords[i], "", 9e9
+        for ref, pts in (route.get("road_points") or {}).items():
+            for q in pts:
+                d = haversine_miles(here, (q[0], q[1]))
+                if d < best_d:
+                    best, best_d = ref, d
+        return best if best_d < 0.6 else ""
+
+    def one(i):
+        here = coords[i]
+        on = road_at(i)
+        base = {"mile": round(cum[i], 1), "lat": round(here[0], 5),
+                "lon": round(here[1], 5), "road": on}
+        last = ""
+        for gap in WINDOWS:
+            lo, hi = at(max(0.0, cum[i] - gap)), at(min(total, cum[i] + gap))
+            if lo == hi:
+                continue
+            leg = cum[hi] - cum[lo]
+            try:
+                alt = reroute_avoiding({"lat": coords[lo][0], "lon": coords[lo][1]},
+                                       {"lat": coords[hi][0], "lon": coords[hi][1]},
+                                       [here], gh_url, radius_miles=radius_miles)
+            except Exception as e:
+                last = str(e)[:70]
+                continue
+            if not alt:
+                continue
+            via = [r for r in alt.get("roads", []) if r != on][:4]
+            return {**base, "trapped": False,
+                    "extra_miles": round(max(alt["miles"] - leg, 0.0), 1),
+                    "leave_mile": round(cum[lo], 1), "rejoin_mile": round(cum[hi], 1),
+                    "detour_miles": round(alt["miles"], 1),
+                    "wide": gap >= WINDOWS[-1], "via": via}
+
+        # No route at any width is the most useful answer this can give. It
+        # means a closure here leaves you with nowhere to go, and a driver
+        # wants that written down before they set off.
+        return {**base, "trapped": True, "extra_miles": None, "via": [],
+                "why": last or "no route avoids it at any width"}
+
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        got = [r for r in pool.map(one, picks) if r]
+    got.sort(key=lambda r: r["mile"])
+    return got
 
 
 # ----------------------------------------------------------------- what time is it where you are driving
@@ -2849,13 +3012,14 @@ class Opts:
     """Plain options bag so the CLI and the server can share one code path."""
     def __init__(self, origin, dest, tank=55, mpg=42, fuel=50, reserve=10,
                  depart=None, detour=0.0, units="uk", offline=False, out=None,
-                 verify=False, gh=None):
+                 verify=False, gh=None, escapes=0):
         self.origin, self.dest = origin, dest
         self.tank, self.mpg, self.fuel, self.reserve = float(tank), float(mpg), float(fuel), float(reserve)
         self.depart = depart
         self.detour, self.units, self.offline, self.out = float(detour), units, offline, out
         self.verify = verify
         self.gh = gh
+        self.escapes = int(escapes or 0)
 
 
 def build_plan(o):
@@ -2912,6 +3076,16 @@ def build_plan(o):
                 plan["reroute"] = reroute_avoiding(a, b, plan["located"], o.gh)
             except Exception as e:
                 plan["reroute_error"] = str(e)[:90]
+
+    # Escape routes are worked out for the whole journey, whether or not
+    # anything is shut today, because the point of them is the closure that
+    # appears after you have left and out of reach of any signal.
+    plan["escapes"] = []
+    if getattr(o, "escapes", 0) and o.gh:
+        try:
+            plan["escapes"] = escape_routes(r, o.gh, samples=o.escapes)
+        except Exception as e:
+            plan["reroute_error"] = (plan.get("reroute_error") or "") + f" escapes: {str(e)[:60]}"
 
     # a real diversion replaces the guessed one
     if plan["reroute"]:
@@ -3121,6 +3295,9 @@ def main():
     p.add_argument("--osrm", default=OSRM_BASE)
     p.add_argument("--offline", action="store_true")
     p.add_argument("--privacy", action="store_true")
+    p.add_argument("--escapes", type=int, default=0, metavar="N",
+                   help="work out the way round a closure at N points along the route, "
+                        "before you leave, and bake them into the offline page. Needs --gh.")
     p.add_argument("--out", default=None, help="write a page for your phone")
     p.add_argument("--json", action="store_true", help="machine-readable output")
     p.add_argument("--verify", action="store_true",
@@ -3132,7 +3309,8 @@ def main():
     GH_BASE = args.gh.rstrip("/") if args.gh else None
 
     o = Opts(args.origin, args.dest, args.tank, args.mpg, args.fuel, args.reserve,
-             args.depart, args.detour, args.units, args.offline, args.out, args.verify, args.gh)
+             args.depart, args.detour, args.units, args.offline, args.out, args.verify,
+             args.gh, args.escapes)
     print("\nWorking...", file=sys.stderr)
     plan = build_plan(o)
 
