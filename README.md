@@ -73,6 +73,7 @@ Measured on one 110-mile stretch of the A9:
 | Rerouting | locates a closure, blocks it, routes around it |
 | Diversion | the extra miles feed back into the fuel plan |
 | Offline | writes a page for your phone that needs no signal |
+| Time | every clock is the clock where the driving happens, not this machine's |
 | Privacy | reports what left the machine, and can refuse to leak |
 
 ## Install
@@ -373,6 +374,31 @@ reads the GraphQL that sits behind Transport Infrastructure Ireland's own
 public map. That is undocumented and can change without notice, and the
 provider health check is what catches it when it does.
 
+## What time is it there
+
+This was found on a machine whose clock sat eight hours from the route, planning a run from
+Lisbon. The tool read the machine's clock, got 17:48, checked Portuguese
+opening hours against it, and called every shut forecourt open. It was
+01:48 in Portugal.
+
+So no time in this tool comes from the machine any more.
+
+- Departure, when you do not give one, is now where the car is.
+- Times printed stay on the driver's watch, the clock at the start of the run.
+- Opening hours are checked where each forecourt stands. A Lisbon to Madrid
+  journey puts an hour on somewhere round Badajoz, and the stations on the
+  far side are judged in Spanish time.
+- A forecourt that came out of a national register is in that nation,
+  already established by the government that published it. Spain's register
+  runs to the Canaries, which are an hour behind Madrid.
+- Everything else falls to a table of boxes. Portugal and Spain are an hour
+  apart across a 754 mile land border, so Portugal gets a rough outline
+  instead: a box round it swallows Badajoz, Merida, Caceres, Huelva, Zamora
+  and Vigo. Tested against 25 towns, it places 22 and misses three that sit
+  within two miles of the line, where the border is the middle of a river.
+- Norwegian Finnmark pokes into the Finnish box, and those two are an hour
+  apart, so the Finnish entry carries two holes for it.
+
 ## Known limits
 
 | | |
@@ -384,6 +410,7 @@ provider health check is what catches it when it does.
 | Data errors | Forecourt Trader found every supermarket site in Fuel Finder mislabelled |
 | Snapshots | the offline page states when it was made |
 | Consumption | one flat mpg figure, no hills, load, weather or speed |
+| Border clocks | Miranda do Douro, Vila Real de Santo Antonio and Tui read as the wrong side, each about two miles from the line |
 | Hours outside GB, France and Spain | OpenStreetMap only, and it reports `no hours recorded` |
 | Holidays outside GB | no register outside Britain publishes a holiday timetable |
 | Overpass | two mirrors left, both rate-limited. An empty answer from one is treated as a failure, not an answer |

@@ -600,7 +600,7 @@ class WhichRegister(unittest.TestCase):
         # arrived, 9,799 forecourts would have come back as hours unknown.
         src = open(fr.__file__).read()
         i = src.index("eta = depart + timedelta")
-        self.assertIn('st.get("ff_hours")', src[i:i + 500])
+        self.assertIn('st.get("ff_hours")', src[i:i + 1400])
 
 
 
@@ -677,6 +677,93 @@ class CheaperThanThis(unittest.TestCase):
         window = src[i - 700:i + 200]
         self.assertNotIn('pick["prices"].get(grade, 0)', window)
         self.assertIn("here", window)
+
+
+
+class WhatTimeIsItThere(unittest.TestCase):
+    """This machine's clock is whatever room it is sitting in. Planning a
+    Portuguese run from a machine eight hours from the route checked Portuguese
+    opening hours against a clock eight hours out, and every shut station
+    came back open."""
+
+    CITIES = {
+        "Europe/Lisbon": (38.72, -9.14),
+        "Europe/Madrid": (40.42, -3.70),
+        "Europe/Dublin": (53.35, -6.26),
+        "Europe/London": (57.48, -4.22),
+        "Europe/Paris": (48.86, 2.35),
+        "Europe/Berlin": (52.52, 13.40),
+        "Europe/Copenhagen": (55.68, 12.57),
+        "Europe/Stockholm": (59.33, 18.07),
+        "Europe/Oslo": (59.91, 10.75),
+        "Europe/Helsinki": (60.17, 24.94),
+    }
+
+    def test_each_capital_lands_in_its_own_zone(self):
+        for want, (lat, lon) in self.CITIES.items():
+            z = fr.zone_for(lat, lon)
+            self.assertIsNotNone(z, want)
+            self.assertEqual(getattr(z, "key", None), want)
+
+    def test_the_arctic_corners(self):
+        # Norwegian Finnmark pokes into the Finnish box, and those two
+        # are an hour apart.
+        self.assertEqual(getattr(fr.zone_for(69.65, 18.96), "key", None), "Europe/Oslo")
+        self.assertEqual(getattr(fr.zone_for(69.73, 30.05), "key", None), "Europe/Oslo")
+        self.assertEqual(getattr(fr.zone_for(66.50, 25.73), "key", None), "Europe/Helsinki")
+
+
+    IBERIA = [
+        ("Lisbon", 38.72, -9.14, "Europe/Lisbon"),
+        ("Porto", 41.15, -8.61, "Europe/Lisbon"),
+        ("Faro", 37.02, -7.93, "Europe/Lisbon"),
+        ("Elvas", 38.88, -7.16, "Europe/Lisbon"),
+        ("Braganca", 41.81, -6.76, "Europe/Lisbon"),
+        ("Badajoz", 38.88, -6.97, "Europe/Madrid"),
+        ("Merida", 38.92, -6.34, "Europe/Madrid"),
+        ("Huelva", 37.26, -6.95, "Europe/Madrid"),
+        ("Caceres", 39.47, -6.37, "Europe/Madrid"),
+        ("Vigo", 42.24, -8.72, "Europe/Madrid"),
+        ("Salamanca", 40.97, -5.66, "Europe/Madrid"),
+    ]
+
+    def test_the_iberian_border_is_not_a_rectangle(self):
+        """A box round Portugal swallows Badajoz, Merida, Caceres, Huelva
+        and Vigo, and those are an hour out."""
+        for name, lat, lon, want in self.IBERIA:
+            self.assertEqual(getattr(fr.zone_for(lat, lon), "key", None), want, name)
+
+    def test_a_register_knows_its_own_country(self):
+        z = lambda st: getattr(fr.zone_for_station(st), "key", None)
+        self.assertEqual(z({"source": "portugal", "lat": 38.9, "lon": -7.0}), "Europe/Lisbon")
+        self.assertEqual(z({"source": "spain", "lat": 38.9, "lon": -7.0}), "Europe/Madrid")
+        self.assertEqual(z({"source": "france", "lat": 48.9, "lon": 2.3}), "Europe/Paris")
+
+    def test_the_canaries_are_not_madrid(self):
+        # The Spanish register runs 600 miles into the Atlantic.
+        self.assertEqual(getattr(fr.zone_for_station(
+            {"source": "spain", "lat": 28.1, "lon": -15.4}), "key", None), "Atlantic/Canary")
+
+    def test_now_means_now_where_the_car_is(self):
+        from datetime import timezone
+        lisbon = fr.zone_for(38.72, -9.14)
+        here = fr.local_now(lisbon)
+        there = datetime.now(timezone.utc).astimezone(lisbon).replace(tzinfo=None)
+        self.assertLess(abs((here - there).total_seconds()), 5)
+
+    def test_crossing_a_border_moves_the_clock(self):
+        lis, mad = fr.zone_for(38.72, -9.14), fr.zone_for(40.42, -3.70)
+        noon = datetime(2026, 10, 19, 12, 0)
+        self.assertEqual(fr.shift_between(noon, lis, mad).hour, 13)
+        self.assertEqual(fr.shift_between(noon, lis, lis).hour, 12)
+        self.assertEqual(fr.shift_between(noon, None, mad).hour, 12)
+
+    def test_the_station_is_judged_on_its_own_clock(self):
+        src = open(fr.__file__).read()
+        i = src.index("eta = depart + timedelta")
+        window = src[i:i + 1400]
+        self.assertIn("local_eta", window)
+        self.assertNotIn("ff_open_at(st, eta", window)
 
 
 

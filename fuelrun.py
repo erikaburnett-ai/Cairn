@@ -2110,6 +2110,14 @@ def write_plan(path, plan):
                   'breakdown number for the roads you are on today: put your own '
                   'recovery service in your phone before you go.</div>')
 
+    # A printed page in a glovebox has no clock of its own, so it says
+    # whose time it is written in.
+    tzname = (plan.get("tz") or "").split("/")[-1].replace("_", " ")
+    tzline = f" &middot; all times {tzname} time" if tzname else ""
+    if plan.get("end_tz") and plan.get("tz") and plan["end_tz"] != plan["tz"]:
+        tzline += (" &middot; you cross into "
+                   + plan["end_tz"].split("/")[-1].replace("_", " ") + " time")
+
     used = sorted({i["source"] for i in hits}) or plan.get("providers", [])
     sources = ("Fuel: UK Fuel Finder, Open Government Licence v3.0."
                if plan.get("source") == "fuelfinder" else
@@ -2220,7 +2228,7 @@ font-size:15px;margin-bottom:12px}}
 .note{{color:#9aa7b2;font-size:14px;margin-top:10px}}
 </style></head><body>
 <h1>{args.origin} to {args.dest}</h1>
-<div class="sub">{total_miles:.0f} miles &middot; leave {depart:%a %d %b %H:%M} &middot; arrive about {arrive:%H:%M}<br>
+<div class="sub">{total_miles:.0f} miles &middot; leave {depart:%a %d %b %H:%M} &middot; arrive about {arrive:%H:%M}{tzline}<br>
 {args.fuel:.0f}% of {args.tank:.0f}{vol} gives you {range_miles:.0f} miles</div>
 {'<div class="big"><div class="t">The plan</div><div class="v">' + pick['name'] + '</div>mile ' + f"{pick['along']:.0f}" + ', about ' + f"{pick['eta']:%H:%M}" + '</div>' if pick else '<div class="big" style="border-left-color:#8c2f2f"><div class="t">The plan</div><div class="v">Fuel before you leave</div>Nothing confirmed open within range.</div>'}
 {rr}
@@ -2513,6 +2521,141 @@ def reroute_avoiding(a, b, points, gh_url, profile="car"):
 
 
 
+# ----------------------------------------------------------------- what time is it where you are driving
+
+# This machine's clock is whatever room it is sitting in. The question this
+# tool answers is whether a forecourt in Spain will be open when you reach
+# it, and that is a question about Spanish time. Planning a Lisbon run from
+# a machine eight hours from the route checked Portuguese opening hours against a
+# clock eight hours out and called every shut station open.
+#
+# Boxes, in the same shape as the closure registry, because mapping a
+# coordinate to a zone properly needs a shapefile and this does not.
+# zoneinfo handles the summer time switch, which is the part worth getting
+# from a library rather than guessing.
+# Ordered narrowest first, because every one of these boxes overlaps a
+# neighbour. Ireland before Britain or Dublin reads as London. Finland
+# before Norway or Helsinki reads as Oslo, and those two are an hour
+# apart. The third item is a list of holes: Norwegian Finnmark pokes into
+# the Finnish box at the top of the map and keeps Norwegian time.
+ZONES = [
+    ((36.9, 42.2, -9.6, -6.1), "Europe/Lisbon", []),
+    # Belfast lands in the Dublin box and Malmo in the Copenhagen one.
+    # Both are wrong on the map and right on the clock, to the minute,
+    # all year, which is the only thing this table is for.
+    ((51.3, 55.5, -10.7, -5.8), "Europe/Dublin", []),
+    ((49.8, 61.1, -8.7, 2.1), "Europe/London", []),
+    ((35.9, 43.9, -9.4, 4.4), "Europe/Madrid", []),
+    ((49.4, 50.2, 5.7, 6.6), "Europe/Luxembourg", []),
+    ((49.4, 51.6, 2.5, 6.0), "Europe/Brussels", []),
+    ((50.7, 53.6, 3.3, 7.3), "Europe/Amsterdam", []),
+    ((41.3, 51.1, -5.2, 9.6), "Europe/Paris", []),
+    ((46.3, 49.1, 9.5, 17.2), "Europe/Vienna", []),
+    ((45.4, 46.9, 13.3, 16.6), "Europe/Ljubljana", []),
+    ((47.2, 55.1, 5.8, 15.1), "Europe/Berlin", []),
+    ((54.5, 57.8, 8.0, 15.2), "Europe/Copenhagen", []),
+    ((59.7, 70.1, 20.5, 31.6), "Europe/Helsinki",
+     [(69.3, 71.3, 15.0, 25.6),      # Troms and west Finnmark
+      (69.4, 71.3, 28.6, 31.3)]),    # Sor-Varanger, round Kirkenes
+    ((55.3, 69.1, 11.0, 24.2), "Europe/Stockholm", []),
+    ((57.8, 71.3, 4.0, 31.2), "Europe/Oslo", []),
+]
+
+
+def zone_for(lat, lon):
+    """The IANA zone covering this point, or None if it is off the map.
+
+    Ordered narrowest first: Portugal before Spain, Ireland before Britain,
+    Norway before Sweden, because the boxes overlap at every border.
+    """
+    if lat is None or lon is None:
+        return None
+    for box, name, holes in ZONES:
+        if name == "Europe/Lisbon" and not _in_polygon(PT_OUTLINE, lat, lon):
+            continue
+        if _inside(box, lat, lon) and not any(_inside(h, lat, lon) for h in holes):
+            try:
+                from zoneinfo import ZoneInfo
+                return ZoneInfo(name)
+            except Exception:
+                return None
+    return None
+
+
+# Portugal and Spain are an hour apart and share a 754 mile land border that
+# no rectangle can follow. A box round Portugal swallows Badajoz, Merida,
+# Caceres, Huelva, Zamora and Vigo, all of them Spanish and all of them an
+# hour out. So the frontier gets a rough polygon. Tested against 25 towns on
+# both sides: it places 22 correctly and misses three that sit within about
+# two miles of the line, Miranda do Douro, Vila Real de Santo Antonio and
+# Tui, where the border is the middle of a river.
+PT_OUTLINE = [
+    (42.15, -8.88), (42.05, -8.20), (41.95, -7.20), (41.87, -6.55), (41.68, -6.12),
+    (41.52, -6.17), (41.40, -6.50), (41.03, -6.80), (40.62, -6.80), (40.35, -6.86),
+    (40.26, -7.00), (39.95, -6.88), (39.67, -7.02), (39.70, -7.55), (39.37, -7.25),
+    (39.17, -7.14), (38.98, -7.14), (38.87, -7.05), (38.45, -7.22), (38.20, -7.00),
+    (38.03, -7.10), (37.95, -7.40), (37.52, -7.44), (37.25, -7.41), (37.15, -7.44),
+    (37.00, -7.52), (36.95, -8.20), (37.02, -8.99), (38.00, -8.90), (38.70, -9.50),
+    (39.40, -9.40), (40.20, -8.90), (41.00, -8.80), (41.80, -8.87),
+]
+
+
+def _in_polygon(poly, lat, lon):
+    """Ray casting. Points exactly on an edge may fall either way."""
+    inside, j = False, len(poly) - 1
+    for i, (yi, xi) in enumerate(poly):
+        yj, xj = poly[j]
+        if (yi > lat) != (yj > lat) and lon < (xj - xi) * (lat - yi) / (yj - yi) + xi:
+            inside = not inside
+        j = i
+    return inside
+
+
+# A forecourt that came out of a national register is in that nation, which
+# its own government has already established. No geometry needed.
+REGISTER_ZONES = {"fuelfinder": "Europe/London", "france": "Europe/Paris",
+                  "spain": "Europe/Madrid", "portugal": "Europe/Lisbon"}
+
+
+def zone_for_station(st, fallback=None):
+    """The zone a forecourt keeps its hours in."""
+    key = REGISTER_ZONES.get(st.get("source"))
+    if key:
+        # The Spanish register runs to the Canaries, which are an hour
+        # behind the mainland and 600 miles out into the Atlantic.
+        if st.get("source") == "spain" and (st.get("lon") or 0) < -12:
+            key = "Atlantic/Canary"
+        try:
+            from zoneinfo import ZoneInfo
+            return ZoneInfo(key)
+        except Exception:
+            return fallback
+    return zone_for(st.get("lat"), st.get("lon")) or fallback
+
+
+def local_now(tz):
+    """Now, on the clock where the driving happens, with no zone attached.
+
+    The rest of this tool works in naive datetimes that mean local time at
+    the forecourt, so the zone is used to get the number right and then
+    dropped.
+    """
+    from datetime import timezone as _tz
+    if tz is None:
+        return datetime.now()
+    return datetime.now(_tz.utc).astimezone(tz).replace(tzinfo=None)
+
+
+def shift_between(when, from_tz, to_tz):
+    """Read a wall clock in one zone and say what it reads in another."""
+    if from_tz is None or to_tz is None or from_tz is to_tz:
+        return when
+    try:
+        return when.replace(tzinfo=from_tz).astimezone(to_tz).replace(tzinfo=None)
+    except Exception:
+        return when
+
+
 # ----------------------------------------------------------------- the plan
 
 class Opts:
@@ -2530,11 +2673,17 @@ class Opts:
 
 def build_plan(o):
     """Everything, computed, nothing printed. The CLI and the server both call this."""
-    depart = datetime.fromisoformat(o.depart) if o.depart else datetime.now()
     notes = []
 
     a, b = resolve(o.origin, o.offline), resolve(o.dest, o.offline)
     r = route(a, b, o.offline)
+
+    # Every time in this plan is wall clock time at the start of the
+    # journey. A departure the user typed is read that way, and "now"
+    # means now where the car is, not where the laptop is.
+    start_tz = zone_for(a["lat"], a["lon"])
+    end_tz = zone_for(b["lat"], b["lon"])
+    depart = datetime.fromisoformat(o.depart) if o.depart else local_now(start_tz)
 
     total_miles = r["miles"] + o.detour
     total_hours = r["hours"] * (total_miles / r["miles"] if r["miles"] else 1)
@@ -2544,6 +2693,7 @@ def build_plan(o):
     range_miles = usable_vol * per_unit
 
     plan = {"opts": o, "a": a, "b": b, "roads": r.get("roads", set()),
+            "tz": getattr(start_tz, "key", None), "end_tz": getattr(end_tz, "key", None),
             "coords": r["coords"], "route_cached": bool(r.get("cached")),
             "depart": depart, "arrive": depart + timedelta(hours=total_hours),
             "total_miles": total_miles, "total_hours": total_hours,
@@ -2615,6 +2765,12 @@ def build_plan(o):
         if along > range_miles or along < 1:
             continue
         eta = depart + timedelta(hours=total_hours * (along / total_miles))
+        # The clock on the dashboard says one thing and the clock on the
+        # forecourt door says another. The arrival time printed stays the
+        # driver's, and the opening hours are checked against the
+        # forecourt's own.
+        here_tz = zone_for_station(st, start_tz)
+        local_eta = shift_between(eta, start_tz, here_tz)
         # Any station from a statutory register carries ff_hours. The test
         # used to be the word "fuelfinder", so the day France and Spain
         # arrived every one of their 21,000 forecourts would have been read
@@ -2623,11 +2779,13 @@ def build_plan(o):
         if st.get("ff_hours"):
             hol = plan.setdefault("_holidays", bank_holidays()) \
                 if st.get("source") == "fuelfinder" else None
-            bh = ff_bank_holiday(st, eta, hol) if st.get("source") == "fuelfinder" else None
-            is_open, shuts = ff_open_at(st, eta, hol), ff_closes_at(st, eta, hol)
+            bh = ff_bank_holiday(st, local_eta, hol) if st.get("source") == "fuelfinder" else None
+            is_open = ff_open_at(st, local_eta, hol)
+            shuts = ff_closes_at(st, local_eta, hol)
         else:
             bh = None
-            is_open, shuts = parse_hours(st.get("hours"), eta), closes_at(st.get("hours"), eta)
+            is_open = parse_hours(st.get("hours"), local_eta)
+            shuts = closes_at(st.get("hours"), local_eta)
 
         scored.append({**st, "along": along, "off_route": st.get("off_route", best_d),
                        "eta": eta, "open": is_open, "shuts": shuts, "bank_holiday": bh})
@@ -2702,6 +2860,7 @@ def plan_json(plan):
     return {
         "from": o.origin, "to": o.dest,
         "miles": round(plan["total_miles"]), "hours": round(plan["total_hours"], 2),
+        "timezone": plan.get("tz"),
         "depart": plan["depart"].isoformat(timespec="minutes"),
         "arrive": plan["arrive"].isoformat(timespec="minutes"),
         "range_miles": round(plan["range_miles"]), "makes_it": plan["makes_it"],
@@ -2789,8 +2948,17 @@ def main():
     print(f"  Distance        {plan['total_miles']:.0f} miles"
           + (f"  (incl. {o.detour:.0f} mi diversion)" if o.detour else ""))
     print(f"  Driving time    {plan['total_hours']:.1f} hours")
-    print(f"  Departing       {plan['depart']:%a %d %b, %H:%M}")
+    tz = plan.get("tz")
+    zone = f"  ({tz.split('/')[-1].replace('_', ' ')} time)" if tz else ""
+    print(f"  Departing       {plan['depart']:%a %d %b, %H:%M}{zone}")
     print(f"  Arriving        {plan['arrive']:%a %d %b, %H:%M}")
+    if tz and plan.get("end_tz") and plan["end_tz"] != tz:
+        # Lisbon to Madrid puts an hour on the clock somewhere round
+        # Badajoz. Times here stay on the driver's watch, and each
+        # forecourt is judged on its own.
+        print(f"  Clocks          you cross into {plan['end_tz'].split('/')[-1]} time. "
+              f"Times above are {tz.split('/')[-1]} time;")
+        print("                  opening hours are checked where each station stands.")
     print(f"\n  In the tank     {o.fuel:.0f}% of {o.tank:.0f} {plan['vol']}")
     print(f"  Usable          {plan['usable_vol']:.1f} {plan['vol']} down to your {o.reserve:.0f}% reserve")
     print(f"  That's          {plan['range_miles']:.0f} miles at {o.mpg:.0f} mpg ({o.units.upper()})")
