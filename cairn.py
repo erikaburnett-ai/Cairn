@@ -222,6 +222,14 @@ def resolve(place, offline=False):
             LEAKED.append(f"postcodes.io  <- {s.upper()}")
             return {"name": s.upper(), "lat": float(r["latitude"]), "lon": float(r["longitude"]),
                     "how": "postcodes.io"}
+        # Anything shaped like a postcode stops here. It used to fall through
+        # to the place-name search, where Nominatim matched the non-existent
+        # G1 1AA to a street in Hanoi and the tool planned 7,700 miles from
+        # Glasgow to Thurso without a word of complaint. One mistyped letter
+        # should never return a confident answer on the wrong continent.
+        raise SystemExit(
+            f"'{s.upper()}' looks like a UK postcode and is not a real one. "
+            f"Check it, or give coordinates as lat,lon.")
 
     if offline:
         raise SystemExit(f"'{s}' needs a geocoder and --offline is set. Use a postcode or lat,lon.")

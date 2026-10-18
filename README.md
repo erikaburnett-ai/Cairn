@@ -1,33 +1,36 @@
 ```
+
 ====================================================================
   G1 1AB  to  KW14 8AA
 ====================================================================
-  Distance        287 miles
+  Distance        277 miles
+  Driving time    5.7 hours
+  Departing       Mon 19 Oct, 07:00  (London time)
+  Arriving        Mon 19 Oct, 12:44
+
   In the tank     60% of 55 L
-  That's          254 miles at 45 mpg
+  Usable          27.5 L down to your 10% reserve
 
-  VERDICT: you run to reserve 33 miles short.
+  VERDICT: you run to reserve 5 miles short.
+  You need fuel by mile 272.
 
+  LIVE ON YOUR ROUTE  (10 on A8, A803, A9, B9154, M8, M80, M9)
 --------------------------------------------------------------------
-  LIVE ON YOUR ROUTE  (4 on A9, M8, M80, M9)
---------------------------------------------------------------------
-  [ROADWORKS] A9 Tummel Off Slip
-              on A9  |  Northbound  |  since 9th of September
-              The A9 northbound off-slip at Tummel is closed.
+  [CLOSURE  ] A78 Dunlop Street to A8 Ratho Street
+              on A8  |  Both Directions  |  since 3rd of August 20
+              The A78 Dunlop Street to A8 Ratho Street is currently closed in both direction
 
+  REACHABLE STOPS, furthest first (89 within range)
 --------------------------------------------------------------------
-  REACHABLE STOPS, furthest first
---------------------------------------------------------------------
-  [OPEN  ] mile  233  ETA 15:33  Brora Fuel Express       1.79/L  24 hours
-  [OPEN  ] mile  211  ETA 14:58  Tain Superstore          1.76/L  24 hours   toilets
-  [SHUT  ] mile  185  ETA 14:30  Frasers Filling Station  1.80/L  shut at 14:30
+  [OPEN  ] mile   224  ETA 11:38  Brora Fuel Express Automat      £1.79/L E10    24 hours
+  [OPEN  ] mile   223  ETA 11:38  Sutherland Arms Garage Ltd      £1.79/L E10    shuts 20:00
+            toilets
+  [OPEN  ] mile   208  ETA 11:18  Evelix Service Station          £1.80/L E10    shuts 20:00
+            toilets
 
-====================================================================
-  PLAN: fill at Brora Fuel Express Automat, mile 233, around 15:33.
+  PLAN: fill at Brora Fuel Express Automat, mile 224, around 11:38.
         Ring ahead: +44345 602 9528
-        Cheaper: Mfg Morrisons Alness at mile 197, 4.8p/L less.
-        Confirmed by two independent datasets.
-====================================================================
+        Cheaper: Mfg Morrisons Glasgow Auchinlea at mile 5, 8.8p/L less.
 ```
 
 # Cairn
@@ -197,7 +200,7 @@ that is. Located in this order:
 3. other road numbers, triangulated against the route's own geometry
 4. a place name, geocoded and snapped to the road
 
-a 450-mile run the length of Britain: 34 of 37 located.
+On one 450-mile run the length of Britain, 34 of 37 located.
 
 Blocking uses a GraphHopper custom model. Priority zero inside a polygon
 removes that ground from the graph:
