@@ -572,8 +572,9 @@ Standard library only, in both files. Read `CLA.md` and add your line to
 
 Written by Erika Burnett.
 
-The MCP server exists because [Rendeverance](https://github.com/Rendeverance)
-said it should. He builds
+The MCP server is here because
+[Rendeverance](https://github.com/Rendeverance) asked why an agent should
+need shell access to use a tool like this. He builds
 [ToolFunnel](https://github.com/Rendeverance/toolfunnel), an MCP gateway with
 no runtime dependencies at all, where the JSON-RPC is hand-rolled on Node
 builtins because a thing that gates tool execution is the wrong place for an
