@@ -535,6 +535,93 @@ class DanishAndSwedish(unittest.TestCase):
 
 
 
+class SpanishHours(unittest.TestCase):
+    """1,165 distinct timetable strings across 11,429 forecourts, all of them
+    in one small grammar. Spanish day letters are L M X J V S D, so X is
+    Wednesday: reading M as Wednesday shifts half the week by a day."""
+
+    def test_x_is_wednesday_and_m_is_tuesday(self):
+        h = fr.parse_spanish_hours("X: 24H")
+        self.assertTrue(h["wednesday"]["all_day"])
+        self.assertFalse(h["tuesday"]["all_day"])
+        self.assertTrue(fr.parse_spanish_hours("M: 24H")["tuesday"]["all_day"])
+
+    def test_lunch(self):
+        h = fr.parse_spanish_hours("L-V: 08:00-14:00 y 16:00-21:00")
+        self.assertEqual(h["monday"]["windows"], [[480, 840], [960, 1260]])
+        self.assertEqual(h["sunday"]["windows"], [])
+
+    def test_a_shut_forecourt_at_three_is_not_open(self):
+        st = {"source": "spain",
+              "ff_hours": fr.parse_spanish_hours("L-V: 08:00-14:00 y 16:00-21:00")}
+        at = lambda t: datetime.fromisoformat("2026-10-19T" + t)
+        self.assertIs(fr.ff_open_at(st, at("09:00")), True)
+        self.assertIs(fr.ff_open_at(st, at("15:00")), False)
+        self.assertIs(fr.ff_open_at(st, at("17:00")), True)
+        self.assertEqual(fr.ff_closes_at(st, at("09:00")), "14:00")
+
+    def test_mixed_groups(self):
+        h = fr.parse_spanish_hours("L-J: 06:00-22:00; V: 06:00-23:59; S: 24H; D: 00:00-22:00")
+        self.assertEqual(h["wednesday"]["windows"], [[360, 1320]])
+        self.assertTrue(h["saturday"]["all_day"])
+        self.assertEqual(h["sunday"]["windows"], [[0, 1320]])
+
+    def test_an_unparseable_string_says_unknown_not_open(self):
+        st = {"source": "spain", "ff_hours": fr.parse_spanish_hours("sin horario")}
+        self.assertIsNone(fr.ff_open_at(st, datetime(2026, 10, 19, 9, 0)))
+
+
+class FrenchCardMachines(unittest.TestCase):
+    """5,592 of France's 9,799 forecourts run a card machine around the
+    clock behind a kiosk that shuts at eight. Reading the kiosk hours alone
+    would send somebody past a working pump at two in the morning."""
+
+    def test_the_kiosk_shutting_does_not_shut_the_pump(self):
+        hours = {d: fr._hours(all_day=True) for d in fr.FF_DAYS}
+        st = {"source": "france", "ff_hours": hours, "always_card": True}
+        self.assertIs(fr.ff_open_at(st, datetime(2026, 10, 19, 3, 0)), True)
+
+    def test_without_the_card_machine_the_kiosk_hours_rule(self):
+        hours = {d: fr._hours(windows=[[480, 1200]]) for d in fr.FF_DAYS}
+        st = {"source": "france", "ff_hours": hours}
+        self.assertIs(fr.ff_open_at(st, datetime(2026, 10, 19, 3, 0)), False)
+        self.assertIs(fr.ff_open_at(st, datetime(2026, 10, 19, 9, 0)), True)
+
+
+class WhichRegister(unittest.TestCase):
+    def test_every_register_declares_a_box_and_a_loader(self):
+        for reg in fr.FUEL_REGISTERS:
+            for k in ("name", "key", "box", "load", "note"):
+                self.assertIn(k, reg, f"{reg.get('name')} is missing {k}")
+            self.assertEqual(len(reg["box"]), 4)
+
+    def test_a_station_from_a_register_is_not_read_with_the_osm_parser(self):
+        # The test used to be the string "fuelfinder". The day France
+        # arrived, 9,799 forecourts would have come back as hours unknown.
+        src = open(fr.__file__).read()
+        i = src.index("eta = depart + timedelta")
+        self.assertIn('st.get("ff_hours")', src[i:i + 500])
+
+
+
+class Money(unittest.TestCase):
+    """Prices are held in the minor unit because Britain publishes pence.
+    A Spanish saving printed as "31.0p/L" is the wrong currency on the
+    wrong continent."""
+
+    def test_pence_and_cents_are_not_the_same_mark(self):
+        self.assertEqual(fr.money(31.0, "EUR"), "31.0c/L")
+        self.assertEqual(fr.money(31.0, "GBP"), "31.0p/L")
+
+    def test_over_a_unit_prints_as_one(self):
+        self.assertEqual(fr.money(180, "EUR"), "\u20ac1.80/L")
+        self.assertEqual(fr.money(140.9, "GBP"), "\u00a31.41/L")
+
+    def test_an_unlabelled_price_does_not_crash(self):
+        self.assertTrue(fr.money(100, None))
+
+
+
 # ----------------------------------------------------------------- live
 
 @unittest.skipUnless(LIVE, "pass --live to hit the real feeds")
@@ -557,6 +644,16 @@ class LiveProviders(unittest.TestCase):
     def test_norway(self):             self.check(fr.p_vegvesen, 50)
     def test_denmark(self):            self.check(fr.p_vejdirektoratet, 20)
     def test_sweden_via_denmark(self): self.check(fr.p_swedish_via_denmark, 10)
+
+    def test_france_register(self):
+        rows = fr.load_france()
+        self.assertGreater(len(rows), 8000)
+        self.assertTrue(any(r['prices'] for r in rows))
+
+    def test_spain_register(self):
+        rows = fr.load_spain()
+        self.assertGreater(len(rows), 9000)
+        self.assertTrue(any(r['prices'] for r in rows))
 
     def test_fuel_finder_has_the_statutory_fields(self):
         rows = fr.load_fuelfinder()

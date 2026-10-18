@@ -67,7 +67,8 @@ Measured on one 110-mile stretch of the A9:
 |---|---|
 | Range | works out where the tank hits your reserve |
 | Stops | every forecourt reachable before that, open at your arrival time |
-| Closures | live, from 13 national sources, matched to the roads you use |
+| Closures | live, from 17 national sources, matched to the roads you use |
+| Fuel data | three statutory registers: Britain, France, Spain. 29,000 forecourts with published hours |
 | Bank holidays | the statutory holiday timetable, per nation, where it differs |
 | Rerouting | locates a closure, blocks it, routes around it |
 | Diversion | the extra miles feed back into the fuel plan |
@@ -269,6 +270,9 @@ That second one reads OPEN on its weekday row.
 | Slovenia | DARS | Atom feed, no key |
 | Spain | DGT | DATEX II, no key |
 | Netherlands | NDW | DATEX II, no key |
+| Norway | the service behind vegvesen.no's own map | no key, undocumented |
+| Denmark | Vejdirektoratet map layers | open bucket, no key |
+| Sweden | the Skane roadworks Denmark relays | roadworks only, southern tip only |
 | Finland | Digitraffic | DATEX II, no key |
 
 About 10,000 live incidents. 4.2% carry a type this tool cannot rank, and
@@ -292,8 +296,39 @@ and those are open.
 
 Look for the public route before writing a country off.
 
-Fuel: UK Fuel Finder (OGL v3.0), OpenStreetMap elsewhere. Routing: OSRM or
-GraphHopper. Geocoding: Nominatim, postcodes.io, or OS Code-Point Open.
+Routing: OSRM or GraphHopper. Geocoding: Nominatim, postcodes.io, or OS
+Code-Point Open.
+
+### The fuel registers
+
+Britain is not the only country that made publishing compulsory, and the
+other two are just as open.
+
+| Country | Register | Forecourts | Hours | Prices |
+|---|---|---|---|---|
+| Great Britain | Fuel Finder, Motor Fuel Price (Open Data) Regulations 2025 | 8,139 | per day, plus a bank holiday row | 6 grades |
+| France | prix-carburants, Licence Ouverte | 9,799 | per day, plus a 24-hour card flag | 5 grades |
+| Spain | MITECO, Real Decreto-ley 6/2000 | 11,429 | per day, lunch closings included | 11 grades |
+
+29,367 forecourts with hours published by law. Everywhere else still falls
+back to OpenStreetMap. That knows where the stations are. Three times in
+four it has no opening hours for them.
+
+Two things the other registers teach that Britain's does not.
+
+France publishes `automate-24-24`. The kiosk shuts at eight and the card
+machine runs all night, so 5,592 of its 9,799 forecourts are usable at three
+in the morning while their published staffed hours say closed. Reading the
+staffed hours alone drives somebody past a working pump.
+
+Spain publishes lunch. 1,165 distinct timetable strings, many of the form
+`L-V: 08:00-14:00 y 16:00-21:00`, so a day can have two windows with a hole
+in the middle. Britain's register has one window a day and the model here had
+to grow a second before Spain could be read at all. Spanish day letters run
+L M X J V S D, so X is Wednesday.
+
+Neither France nor Spain publishes a public holiday row. Britain's does, and
+this tool uses it. On 1 November in Spain you are on your own.
 
 ### Adding a country
 
@@ -328,14 +363,16 @@ provider health check is what catches it when it does.
 
 | | |
 |---|---|
-| Scraping | 5 of 14 providers read a web page or an undocumented API and will break on redesign |
-| Coverage | 10 EU member states of 27. Most of the rest put their feed behind an account |
+| Scraping | 7 of 17 providers read a web page or an undocumented API and will break on redesign |
+| Coverage | 11 EU member states of 27, plus the UK and Norway. Most of the rest put their feed behind an account |
+| Sweden | only the Skane roadworks Denmark relays. Trafikverket's own feed needs an account |
 | Borders | road numbers repeat across countries, and bounding boxes overlap at the border |
 | Data errors | Forecourt Trader found every supermarket site in Fuel Finder mislabelled |
 | Snapshots | the offline page states when it was made |
 | Consumption | one flat mpg figure, no hills, load, weather or speed |
-| Hours outside GB | OpenStreetMap only, and it reports `no hours recorded` |
-| Overpass | the public instances rate-limit, so long routes fall back through four mirrors |
+| Hours outside GB, France and Spain | OpenStreetMap only, and it reports `no hours recorded` |
+| Holidays outside GB | no register outside Britain publishes a holiday timetable |
+| Overpass | two mirrors left, both rate-limited. An empty answer from one is treated as a failure, not an answer |
 
 ## Tests
 

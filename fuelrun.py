@@ -1525,9 +1525,256 @@ def load_fuelfinder(max_age_hours=6):
             "temp_closed": r.get("forecourts.temporary_closure", "").lower() == "true",
             "motorway": r.get("forecourts.is_motorway_service_station", "").lower() == "true",
             "toilets": r.get("forecourts.amenities.customer_toilets", "").lower() == "true",
-            "prices": prices, "ff_hours": hours, "source": "fuelfinder",
+            "prices": prices, "currency": "GBP",
+            "ff_hours": hours, "source": "fuelfinder",
         })
     return out
+
+
+# ----------------------------------------------------------------- France and Spain: the other statutory registers
+
+# Britain is not the only country that made publishing compulsory. France has
+# run prix-carburants since 2007 under the Code de commerce, and Spain runs
+# its own under Real Decreto-ley 6/2000, both free, both without a key, both
+# carrying opening hours as well as prices. Until tonight this tool fell back
+# to OpenStreetMap the moment it left Britain. That gives a name and a dot on
+# a map. Three times in four it has no opening hours at all.
+#
+# Hours here are a list of windows per day, in minutes past midnight, because
+# a Spanish forecourt shuts for lunch and the one-window model used for
+# Britain cannot say so.
+
+FR_URL = "https://donnees.roulez-eco.fr/opendata/instantane"
+ES_URL = ("https://sedeaplicaciones.minetur.gob.es/ServiciosRESTCarburantes"
+          "/PreciosCarburantes/EstacionesTerrestres/")
+
+
+def _hours(all_day=False, windows=None):
+    """One day of a timetable. windows is a list of (from, to) in minutes."""
+    return {"all_day": bool(all_day), "windows": list(windows or []),
+            "open": "", "close": ""}
+
+
+def _hhmm(text, sep=":"):
+    """'07:30', '7.30', '7:30' to minutes past midnight, or None."""
+    m = re.match(r"\s*(\d{1,2})[.:](\d{2})", text or "")
+    if not m:
+        return None
+    h, mi = int(m.group(1)), int(m.group(2))
+    if h > 24 or mi > 59:
+        return None
+    return h * 60 + mi
+
+
+def load_france(max_age_hours=6):
+    """prix-carburants, the French statutory register. 9,799 forecourts.
+
+    A zipped XML in ISO-8859-1, which Python will not guess, and
+    coordinates in hundred-thousandths of a degree rather than degrees.
+    The flag that matters is automate-24-24: the kiosk shuts at eight and
+    the card machine does not, so a station listed closed all week is
+    open all night to anyone with a card. Getting that wrong strands
+    somebody at two in the morning next to a working pump.
+    """
+    import io, zipfile
+    import xml.etree.ElementTree as ET
+
+    parsed = CACHE / "fuel_france.json"
+    if parsed.exists() and (time.time() - parsed.stat().st_mtime) < max_age_hours * 3600:
+        return json.loads(parsed.read_text())
+
+    blob = CACHE / "fuel_france.zip"
+    if not (blob.exists() and (time.time() - blob.stat().st_mtime) < max_age_hours * 3600):
+        r = subprocess.run(["curl", "-sL", "--max-time", "120", "-A", UA, "-o", str(blob), FR_URL],
+                           capture_output=True, timeout=180)
+        if r.returncode or not blob.exists() or blob.stat().st_size < 10000:
+            raise RuntimeError("prix-carburants download failed")
+    try:
+        with zipfile.ZipFile(blob) as z:
+            name = next(n for n in z.namelist() if n.endswith(".xml"))
+            raw = z.read(name).decode("iso-8859-1")
+    except (zipfile.BadZipFile, StopIteration, KeyError):
+        # A half-downloaded zip is still a file. Bin it so the next run
+        # fetches rather than failing the same way for six hours.
+        blob.unlink(missing_ok=True)
+        raise RuntimeError("prix-carburants download was incomplete")
+
+    grades = {"Gazole": "B7S", "SP95": "E5", "SP98": "E5P", "E10": "E10", "E85": "E85"}
+    out = []
+    for pdv in ET.fromstring(raw):
+        try:
+            lat = float(pdv.get("latitude")) / 100000.0
+            lon = float(pdv.get("longitude")) / 100000.0
+        except (TypeError, ValueError):
+            continue
+        if not lat:
+            continue
+        hz = pdv.find("horaires")
+        always = bool(hz is not None and hz.get("automate-24-24") == "1")
+        hours = {}
+        days = {str(i + 1): d for i, d in enumerate(FF_DAYS)}
+        for d in FF_DAYS:
+            hours[d] = _hours(all_day=always)
+        for jour in (hz if hz is not None else []):
+            day = days.get(jour.get("id"))
+            if not day:
+                continue
+            if jour.get("ferme") == "1":
+                # Shut, unless the card machine runs on without the staff.
+                hours[day] = _hours(all_day=always)
+                continue
+            wins = []
+            for hr in jour.findall("horaire"):
+                o, c = _hhmm(hr.get("ouverture")), _hhmm(hr.get("fermeture"))
+                if o is not None and c is not None and c != o:
+                    wins.append([o, c])
+            hours[day] = _hours(all_day=always, windows=wins)
+        prices = {}
+        for pr in pdv.findall("prix"):
+            g = grades.get(pr.get("nom"))
+            try:
+                v = float(pr.get("valeur"))
+            except (TypeError, ValueError):
+                continue
+            if g:
+                prices[g] = v * 100          # pence-equivalent, as the UK rows are
+        town = (pdv.findtext("ville") or "").strip()
+        addr = (pdv.findtext("adresse") or "").strip()
+        services = [x.text for x in pdv.findall("./services/service") if x.text]
+        out.append({
+            # The register has no brand field, so four Total garages in one
+            # town all came out as "Saint-Jean-De-Luz". The street is the
+            # only thing separating them.
+            "name": ", ".join(x for x in (town.title(), addr.title()) if x) or "Station",
+            "brand": "", "lat": lat, "lon": lon, "phone": "",
+            "temp_closed": False, "motorway": "autoroute" in addr.lower(),
+            "toilets": any("oilettes" in x for x in services),
+            "always_card": always, "addr": addr,
+            "prices": prices, "currency": "EUR",
+            "ff_hours": hours, "source": "france",
+        })
+    parsed.write_text(json.dumps(out))
+    return out
+
+
+ES_DAYS = {"L": 0, "M": 1, "X": 2, "J": 3, "V": 4, "S": 5, "D": 6}
+
+
+def parse_spanish_hours(text):
+    """'L-V: 08:00-14:00 y 16:00-21:00; S: 08:00-14:00' to seven days.
+
+    1,165 distinct strings across 11,429 forecourts and they all follow
+    this grammar: semicolon between groups, a day or a day range, then
+    either 24H or one or two windows joined by 'y'. Days run L M X J V S D,
+    so X is Wednesday and M is Tuesday. Reading M as Wednesday would shift
+    half the week by a day.
+    """
+    out = {d: _hours() for d in FF_DAYS}
+    for part in (text or "").split(";"):
+        if ":" not in part:
+            continue
+        spec, times = part.split(":", 1)
+        spec, times = spec.strip().upper(), times.strip()
+        if "-" in spec and len(spec) == 3:
+            a, b = ES_DAYS.get(spec[0]), ES_DAYS.get(spec[2])
+            if a is None or b is None:
+                continue
+            idx = list(range(a, b + 1)) if a <= b else list(range(a, 7)) + list(range(0, b + 1))
+        else:
+            if spec not in ES_DAYS:
+                continue
+            idx = [ES_DAYS[spec]]
+        if times.upper().startswith("24H"):
+            for i in idx:
+                out[FF_DAYS[i]] = _hours(all_day=True)
+            continue
+        wins = []
+        for chunk in re.split(r"\s+Y\s+", times, flags=re.I):
+            m = re.match(r"\s*(\d{1,2}:\d{2})\s*-\s*(\d{1,2}:\d{2})", chunk)
+            if not m:
+                continue
+            o, c = _hhmm(m.group(1)), _hhmm(m.group(2))
+            if o is not None and c is not None:
+                wins.append([o, c])
+        if wins:
+            for i in idx:
+                out[FF_DAYS[i]] = _hours(windows=wins)
+    return out
+
+
+def load_spain(max_age_hours=6):
+    """Spain's Ministry register. 11,429 forecourts, prices and hours.
+
+    Decimal commas throughout, in the coordinates as well as the prices.
+    """
+    parsed = CACHE / "fuel_spain.json"
+    if parsed.exists() and (time.time() - parsed.stat().st_mtime) < max_age_hours * 3600:
+        return json.loads(parsed.read_text())
+
+    # 12 MB in one response and the server is slow, so a short timeout
+    # leaves a truncated file on disk that is the right size and will not
+    # parse. The first run of this against Bordeaux to Madrid died on
+    # "unterminated string at char 10389766". Parse before keeping it.
+    raw = CACHE / "fuel_spain_raw.json"
+    d = None
+    if raw.exists() and (time.time() - raw.stat().st_mtime) < max_age_hours * 3600:
+        try:
+            d = json.loads(raw.read_text())
+        except ValueError:
+            raw.unlink(missing_ok=True)
+    for attempt in range(2):
+        if d is not None:
+            break
+        subprocess.run(["curl", "-sL", "--max-time", "240", "-A", UA, "-o", str(raw), ES_URL],
+                       capture_output=True, timeout=300)
+        try:
+            d = json.loads(raw.read_text())
+        except (ValueError, OSError):
+            raw.unlink(missing_ok=True)
+    if d is None:
+        raise RuntimeError("Spanish fuel register download was truncated twice")
+
+    num = lambda v: float(str(v).replace(",", ".")) if str(v).strip() else None
+    grades = {"Precio Gasoleo A": "B7S", "Precio Gasolina 95 E5": "E5",
+              "Precio Gasolina 98 E5": "E5P", "Precio Gasolina 95 E10": "E10"}
+    out = []
+    for r0 in d.get("ListaEESSPrecio") or []:
+        try:
+            lat, lon = num(r0.get("Latitud")), num(r0.get("Longitud (WGS84)"))
+        except ValueError:
+            continue
+        if lat is None or lon is None:
+            continue
+        prices = {}
+        for k, g in grades.items():
+            try:
+                v = num(r0.get(k))
+            except ValueError:
+                v = None
+            if v:
+                prices[g] = v * 100
+        # Rotulo is the brand, except where an independent has filed a
+        # licence number instead. "Nº 10.935" on a sign in the dark tells
+        # a driver nothing, so those fall back to the street.
+        rot = (r0.get("Rótulo") or "").strip()
+        place = (r0.get("Municipio") or r0.get("Localidad") or "").strip().title()
+        if not rot or re.fullmatch(r"N[ºo°]?\s*[\d.,]+", rot, re.I):
+            name = ", ".join(x for x in (place, (r0.get("Dirección") or "").strip().title()) if x)
+        else:
+            name = ", ".join(x for x in (rot.title(), place) if x)
+        name = name or "Estación"
+        out.append({
+            "name": name, "brand": (r0.get("Rótulo") or "").strip(),
+            "lat": lat, "lon": lon, "phone": "",
+            "temp_closed": False, "motorway": False, "toilets": False,
+            "addr": f"{r0.get('Dirección', '')}, {r0.get('Municipio', '')}".strip(", "),
+            "prices": prices, "currency": "EUR",
+            "ff_hours": parse_spanish_hours(r0.get("Horario")),
+            "source": "spain",
+        })
+    parsed.write_text(json.dumps(out))
+    return out
+
 
 
 # ----------------------------------------------------------------- bank holidays
@@ -1595,7 +1842,11 @@ def ff_row(st, when, holidays=None):
     forecourt with the tank on the pin, so the holiday row wins when there
     is one and it says something.
     """
-    if ff_bank_holiday(st, when, holidays):
+    # Only the British register publishes a separate bank holiday row, and
+    # the gate is the presence of that row, not the name of the source. An
+    # earlier version keyed off the source string and quietly stopped
+    # applying Christmas hours to any station that did not carry the label.
+    if st["ff_hours"].get("bank_holiday") and ff_bank_holiday(st, when, holidays):
         bh = st["ff_hours"].get("bank_holiday") or {}
         if bh.get("all_day") or (bh.get("open") and bh.get("close")):
             return bh
@@ -1609,6 +1860,17 @@ def ff_open_at(st, when, holidays=None):
     h = ff_row(st, when, holidays)
     if h["all_day"]:
         return True
+    # France and Spain publish days with two windows, because the place
+    # shuts for lunch. Britain's register has one window a day and the
+    # original code could only read that shape, so a Spanish forecourt
+    # open 08:00 to 14:00 and 16:00 to 21:00 would have read as open
+    # straight through the three hours it is shut.
+    if h.get("windows"):
+        now = when.hour * 60 + when.minute
+        for o, c in h["windows"]:
+            if (now >= o or now < c) if c <= o else (o <= now < c):
+                return True
+        return False
     if not h["open"] or not h["close"]:
         return None
     try:
@@ -1624,7 +1886,15 @@ def ff_open_at(st, when, holidays=None):
 
 def ff_closes_at(st, when, holidays=None):
     h = ff_row(st, when, holidays)
-    if h["all_day"] or not h["close"]:
+    if h["all_day"]:
+        return None
+    if h.get("windows"):
+        now = when.hour * 60 + when.minute
+        for o, c in h["windows"]:
+            if (now >= o or now < c) if c <= o else (o <= now < c):
+                return f"{c // 60 % 24:02d}:{c % 60:02d}"
+        return None
+    if not h["close"]:
         return None
     return h["close"][:5]
 
@@ -1802,7 +2072,7 @@ def write_plan(path, plan):
             cls, status = "maybe", "hours unknown"
         bits = []
         if s.get("prices", {}).get("E10"):
-            bits.append(f"{s['prices']['E10']/100:.2f}/L")
+            bits.append(money(s["prices"]["E10"], s.get("currency")))
         if s.get("off_route", 0) > 0.6:
             bits.append(f"{s['off_route']:.1f} mi off route")
         if s.get("toilets"):
@@ -1916,6 +2186,83 @@ Opening hours change. Ring ahead when it matters.</div>
 </body></html>"""
     Path(path).write_text(doc)
     return path
+
+
+# Prices are held in the minor unit everywhere, because the British register
+# publishes pence. So a Spanish price of 1.80 euro is 180 here, and printing
+# a difference as "31.0p/L" on a road outside Jerez is simply wrong.
+CURRENCY = {"GBP": ("p", "\u00a3"), "EUR": ("c", "\u20ac")}
+
+
+def money(minor, currency="GBP", per_litre=True):
+    """A price or a difference, in the currency it was published in."""
+    minor_name, major = CURRENCY.get(currency or "GBP", CURRENCY["GBP"])
+    tail = "/L" if per_litre else ""
+    if minor < 100:
+        return f"{minor:.1f}{minor_name}{tail}"
+    return f"{major}{minor / 100:.2f}{tail}"
+
+
+# ----------------------------------------------------------------- which register covers where
+
+def _near(stations, coords, corridor_miles=3.0):
+    """Trim a national register to the stations beside this route."""
+    lats = [c[0] for c in coords]; lons = [c[1] for c in coords]
+    pad = corridor_miles / 60.0
+    box = (min(lats) - pad, max(lats) + pad, min(lons) - pad * 1.7, max(lons) + pad * 1.7)
+    near = [s for s in stations if box[0] <= s["lat"] <= box[1] and box[2] <= s["lon"] <= box[3]]
+    step = max(1, len(coords) // 400)
+    thin = coords[::step]
+    out = []
+    for st in near:
+        d = min(haversine_miles((st["lat"], st["lon"]), c) for c in thin)
+        if d <= corridor_miles:
+            out.append({**st, "off_route": d})
+    return out
+
+
+# Same idea as the closure registry: a box, a loader, and a note saying what
+# the country actually promises. Three countries compel their forecourts to
+# publish hours and prices. Everywhere else still falls back to OpenStreetMap,
+# which knows where the stations are and usually not when they are open.
+FUEL_REGISTERS = [
+    {"name": "UK Fuel Finder", "key": "fuelfinder", "box": (49.8, 61.0, -8.7, 2.0),
+     "load": load_fuelfinder,
+     "note": "Motor Fuel Price (Open Data) Regulations 2025, Open Government Licence v3.0"},
+
+    {"name": "prix-carburants", "key": "france", "box": (41.3, 51.1, -5.2, 9.6),
+     "load": load_france,
+     "note": "French statutory register, Licence Ouverte"},
+
+    {"name": "Spanish Ministry register", "key": "spain", "box": (35.9, 43.9, -9.4, 4.4),
+     "load": load_spain,
+     "note": "Real Decreto-ley 6/2000, published by MITECO"},
+]
+
+
+def statutory_near_route(coords):
+    """Every compulsory register that this route passes through, merged.
+
+    Returns the stations and a list of problems. A route from Cardiff to
+    Madrid crosses three of them and each one stops at its own border, so
+    they get merged and the gaps are somebody else's problem.
+    """
+    step = max(1, len(coords) // 300)
+    thin = coords[::step] + [coords[-1]]
+    found, used, problems = [], [], []
+    for reg in FUEL_REGISTERS:
+        if not any(_inside(reg["box"], la, lo) for la, lo in thin):
+            continue
+        try:
+            rows = _near(reg["load"](), coords)
+        except Exception as e:
+            problems.append(f"{reg['name']} unavailable: {str(e)[:70]}")
+            continue
+        if rows:
+            found += rows
+            used.append(reg["key"])
+    return found, used, problems
+
 
 
 # ----------------------------------------------------------------- rerouting
@@ -2058,14 +2405,11 @@ def build_plan(o):
     if plan["makes_it"]:
         return plan
 
-    stations = []
-    try:
-        stations = fuelfinder_near_route(r["coords"])
-        if stations:
-            plan["source"] = "fuelfinder"
-    except Exception as e:
-        notes.append(f"Fuel Finder unavailable: {e}")
-    if not stations:
+    stations, used, problems = statutory_near_route(r["coords"])
+    notes += problems
+    if stations:
+        plan["source"] = ",".join(used)
+    else:
         try:
             stations = fuel_near_route(r["coords"])
             plan["source"] = "osm"
@@ -2085,9 +2429,15 @@ def build_plan(o):
         if along > range_miles or along < 1:
             continue
         eta = depart + timedelta(hours=total_hours * (along / total_miles))
-        if st.get("source") == "fuelfinder":
-            hol = plan.setdefault("_holidays", bank_holidays())
-            bh = ff_bank_holiday(st, eta, hol)
+        # Any station from a statutory register carries ff_hours. The test
+        # used to be the word "fuelfinder", so the day France and Spain
+        # arrived every one of their 21,000 forecourts would have been read
+        # with the OpenStreetMap parser, against an "hours" field they do
+        # not have, and come back as hours unknown.
+        if st.get("ff_hours"):
+            hol = plan.setdefault("_holidays", bank_holidays()) \
+                if st.get("source") == "fuelfinder" else None
+            bh = ff_bank_holiday(st, eta, hol) if st.get("source") == "fuelfinder" else None
             is_open, shuts = ff_open_at(st, eta, hol), ff_closes_at(st, eta, hol)
         else:
             bh = None
@@ -2105,11 +2455,17 @@ def build_plan(o):
         pick = usable[0]
         plan["pick"] = pick
         plan["later"] = len([s for s in scored if s["along"] > pick["along"]])
-        priced = [s for s in usable if s.get("prices", {}).get("E10")]
+        # Countries do not all sell the same grade. Britain's register
+        # leads on E10, Spain's on E5, and comparing a price against a
+        # grade half the forecourts do not stock compares nothing.
+        grade = next((g for g in ("E10", "E5", "B7S")
+                      if sum(1 for s in usable if s.get("prices", {}).get(g)) > 1), None)
+        priced = [s for s in usable if s.get("prices", {}).get(grade)] if grade else []
         if len(priced) > 1:
-            best = min(priced, key=lambda s: s["prices"]["E10"])
-            if best is not pick and best["prices"]["E10"] < pick["prices"].get("E10", 1e9) - 2:
-                plan["cheaper"] = (best, pick["prices"]["E10"] - best["prices"]["E10"])
+            best = min(priced, key=lambda s: s["prices"][grade])
+            if best is not pick and best["prices"][grade] < pick["prices"].get(grade, 1e9) - 2:
+                plan["cheaper"] = (best, pick["prices"].get(grade, 0) - best["prices"][grade])
+                plan["cheaper_grade"] = grade
     return plan
 
 
@@ -2315,7 +2671,7 @@ def main():
         price = ""
         if s.get("prices"):
             g, v = sorted(s["prices"].items(), key=lambda kv: (kv[0] != "E10", kv[0]))[0]
-            price = f"  {v/100:.2f}/L {g}"
+            price = f"  {money(v, s.get('currency'))} {g}"
         print(f"  [{flag}] mile {s['along']:5.0f}  ETA {s['eta']:%H:%M}  "
               f"{s['name'][:28]:30}{price:16} {note}")
         extras = []
@@ -2336,7 +2692,8 @@ def main():
             print(f"        Ring ahead: {pick['phone']}")
         if plan["cheaper"]:
             best, diff = plan["cheaper"]
-            print(f"        Cheaper: {best['name']} at mile {best['along']:.0f}, {diff:.1f}p/L less.")
+            print(f"        Cheaper: {best['name']} at mile {best['along']:.0f}, "
+                  f"{money(diff, best.get('currency'))} less.")
         if plan["later"]:
             print(f"        {plan['later']} station(s) further on are shut or unverified by then.")
         if pick.get("confirmed") is True:
