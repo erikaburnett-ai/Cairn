@@ -44,6 +44,7 @@ STATE = {
     "closures_at": None,
     "closures_error": None,
     "fuel_count": 0,
+    "fuel_by_register": {},
     "fuel_at": None,
     "started": datetime.now(),
     "polls": 0,
@@ -78,14 +79,27 @@ def poll_closures():
         STATE["polls"] += 1
 
 
-def poll_fuel():
-    try:
-        rows = fr.load_fuelfinder(max_age_hours=6)
-        with LOCK:
-            STATE["fuel_count"] = len(rows)
-            STATE["fuel_at"] = datetime.now()
-    except Exception as e:
-        print(f"  fuel refresh failed: {e}", file=sys.stderr)
+def poll_fuel(registers=None):
+    """Keep the statutory fuel registers warm.
+
+    Three of them now, and one being down is not the other two being down,
+    so each is counted on its own and a failure says which country it was.
+    """
+    counts, total = {}, 0
+    for reg in fr.FUEL_REGISTERS:
+        if registers and reg["key"] not in registers:
+            continue
+        try:
+            rows = reg["load"]()
+            counts[reg["key"]] = len(rows)
+            total += len(rows)
+        except Exception as e:
+            counts[reg["key"]] = 0
+            print(f"  {reg['name']} refresh failed: {e}", file=sys.stderr)
+    with LOCK:
+        STATE["fuel_count"] = total
+        STATE["fuel_by_register"] = counts
+        STATE["fuel_at"] = datetime.now()
 
 
 def poller(closure_mins, fuel_hours):
@@ -197,6 +211,7 @@ class H(BaseHTTPRequestHandler):
                 "closures_updated": s["closures_at"].isoformat(timespec="seconds") if s["closures_at"] else None,
                 "closures_error": s["closures_error"],
                 "fuel_stations": s["fuel_count"],
+                "fuel_by_register": s["fuel_by_register"],
                 "fuel_updated": s["fuel_at"].isoformat(timespec="seconds") if s["fuel_at"] else None,
                 "rerouting": bool(GH_URL),
                 "providers": [p["name"] for p in fr.PROVIDERS],
@@ -246,6 +261,9 @@ def main():
                     help="127.0.0.1 is local only. Use 0.0.0.0 to reach it over your VPN.")
     ap.add_argument("--closure-mins", type=float, default=4, help="how often to poll closures")
     ap.add_argument("--fuel-hours", type=float, default=6, help="how often to refresh fuel data")
+    ap.add_argument("--registers", default=None,
+                    help="comma-separated fuel registers to keep warm "
+                         "(fuelfinder,france,spain). Default: all of them.")
     ap.add_argument("--osrm", default=None, help="your local routing server, e.g. http://localhost:8989")
     ap.add_argument("--gh", default=None,
                     help="GraphHopper URL so served plans can reroute, e.g. http://localhost:8989")

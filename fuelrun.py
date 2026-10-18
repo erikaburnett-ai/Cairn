@@ -28,7 +28,7 @@ Usage:
 
 import argparse, hashlib, json, math, re, subprocess, sys, time, urllib.parse
 from html import unescape
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
 
 UA = "fuelrun/0.1 (https://github.com/ ; prototype)"
@@ -1549,10 +1549,17 @@ ES_URL = ("https://sedeaplicaciones.minetur.gob.es/ServiciosRESTCarburantes"
           "/PreciosCarburantes/EstacionesTerrestres/")
 
 
-def _hours(all_day=False, windows=None):
-    """One day of a timetable. windows is a list of (from, to) in minutes."""
+def _hours(all_day=False, windows=None, closed=False):
+    """One day of a timetable. windows is a list of (from, to) in minutes.
+
+    Three states, because two is not enough. Open, shut, and nobody said.
+    A French forecourt marked ferme on a Sunday is shut and the register
+    says so; one with no row at all is unknown, and telling a driver
+    "hours unknown" when the register plainly said "closed" throws away
+    the half of the answer that was there.
+    """
     return {"all_day": bool(all_day), "windows": list(windows or []),
-            "open": "", "close": ""}
+            "closed": bool(closed), "open": "", "close": ""}
 
 
 def _hhmm(text, sep=":"):
@@ -1621,7 +1628,7 @@ def load_france(max_age_hours=6):
                 continue
             if jour.get("ferme") == "1":
                 # Shut, unless the card machine runs on without the staff.
-                hours[day] = _hours(all_day=always)
+                hours[day] = _hours(all_day=always, closed=not always)
                 continue
             wins = []
             for hr in jour.findall("horaire"):
@@ -1823,6 +1830,46 @@ def uk_division(lat, lon):
     return "england-and-wales"
 
 
+def easter(year):
+    """Western Easter Sunday. The anonymous Gregorian algorithm."""
+    a, b, c = year % 19, year // 100, year % 100
+    d, e = b // 4, b % 4
+    g = (8 * b + 13) // 25
+    h = (19 * a + b - d - g + 15) % 30
+    i, k = c // 4, c % 4
+    l = (32 + 2 * e + 2 * i - h - k) % 7
+    m = (a + 11 * h + 22 * l) // 451
+    month = (h + l - 7 * m + 114) // 31
+    day = ((h + l - 7 * m + 114) % 31) + 1
+    return date(year, month, day)
+
+
+def pt_holidays(year):
+    """Portugal's national holidays, which the register answers for.
+
+    Ten fixed dates and three that move with Easter. Municipal holidays
+    are not here: Lisbon shuts for St Anthony on 13 June and Porto for
+    St John on the 24th, and the register has no field for that.
+    """
+    e = easter(year)
+    out = {
+        date(year, 1, 1): "Ano Novo",
+        e - timedelta(days=2): "Sexta-feira Santa",
+        e: "P\u00e1scoa",
+        date(year, 4, 25): "Dia da Liberdade",
+        date(year, 5, 1): "Dia do Trabalhador",
+        e + timedelta(days=60): "Corpo de Deus",
+        date(year, 6, 10): "Dia de Portugal",
+        date(year, 8, 15): "Assun\u00e7\u00e3o",
+        date(year, 10, 5): "Implanta\u00e7\u00e3o da Rep\u00fablica",
+        date(year, 11, 1): "Todos os Santos",
+        date(year, 12, 1): "Restaura\u00e7\u00e3o da Independ\u00eancia",
+        date(year, 12, 8): "Imaculada Concei\u00e7\u00e3o",
+        date(year, 12, 25): "Natal",
+    }
+    return out
+
+
 def ff_bank_holiday(st, when, holidays=None):
     """The name of the bank holiday in force where this forecourt stands,
     or None. Separate from the hours lookup so it can be reported."""
@@ -1850,6 +1897,11 @@ def ff_row(st, when, holidays=None):
         bh = st["ff_hours"].get("bank_holiday") or {}
         if bh.get("all_day") or (bh.get("open") and bh.get("close")):
             return bh
+    # Portugal publishes a holiday row too, and it is the only other
+    # register that does. Thirteen national dates, three of them moving
+    # with Easter.
+    if st.get("pt_holiday_hours") and when.date() in pt_holidays(when.year):
+        return st["pt_holiday_hours"]
     return st["ff_hours"][FF_DAYS[when.weekday()]]
 
 
@@ -1860,6 +1912,8 @@ def ff_open_at(st, when, holidays=None):
     h = ff_row(st, when, holidays)
     if h["all_day"]:
         return True
+    if h.get("closed"):
+        return False
     # France and Spain publish days with two windows, because the place
     # shuts for lunch. Britain's register has one window a day and the
     # original code could only read that shape, so a Spanish forecourt
@@ -2203,6 +2257,126 @@ def money(minor, currency="GBP", per_litre=True):
     return f"{major}{minor / 100:.2f}{tail}"
 
 
+# ----------------------------------------------------------------- Portugal
+
+PT_API = "https://precoscombustiveis.dgeg.gov.pt/api/PrecoComb"
+PT_GRADES = {2101: "B7S", 3201: "E5", 3400: "E5P"}
+
+
+def load_portugal(max_age_hours=6):
+    """DGEG's register. 3,077 forecourts, prices by grade.
+
+    Their list call carries price and position and no hours at all. Hours
+    live one call per station deeper, so they are fetched later, for the
+    few stations that actually end up on a route, rather than three
+    thousand times for one journey.
+    """
+    parsed = CACHE / "fuel_portugal.json"
+    if parsed.exists() and (time.time() - parsed.stat().st_mtime) < max_age_hours * 3600:
+        return json.loads(parsed.read_text())
+
+    by_id = {}
+    for code, grade in PT_GRADES.items():
+        body = get_text(f"{PT_API}/PesquisarPostos?idsTiposComb={code}"
+                        f"&qtdPorPagina=20000&pagina=1")
+        try:
+            rows = json.loads(body).get("resultado") or []
+        except Exception:
+            continue
+        for r in rows:
+            try:
+                lat, lon = float(r["Latitude"]), float(r["Longitude"])
+            except (TypeError, ValueError, KeyError):
+                continue
+            st = by_id.setdefault(r["Id"], {
+                "name": ", ".join(x for x in ((r.get("Marca") or "").title(),
+                                              (r.get("Municipio") or "").title()) if x)
+                        or (r.get("Nome") or "Posto"),
+                "brand": r.get("Marca") or "", "lat": lat, "lon": lon, "phone": "",
+                "temp_closed": False, "motorway": "auto-estrada" in (r.get("TipoPosto") or "").lower(),
+                "toilets": False, "pt_id": r["Id"],
+                "addr": ", ".join(x for x in (r.get("Morada"), r.get("Localidade")) if x),
+                "prices": {}, "currency": "EUR", "ff_hours": None, "source": "portugal",
+            })
+            m = re.search(r"([\d,.]+)", r.get("Preco") or "")
+            if m:
+                try:
+                    st["prices"][grade] = float(m.group(1).replace(",", ".")) * 100
+                except ValueError:
+                    pass
+    out = list(by_id.values())
+    if not out:
+        raise RuntimeError("Portuguese register returned nothing")
+    parsed.write_text(json.dumps(out))
+    return out
+
+
+def _pt_window(text):
+    """'Aberto 24 horas', '06:30-22:00', 'Encerrado', or nothing at all."""
+    t = (text or "").strip()
+    if not t:
+        return None
+    low = t.lower()
+    if "24" in low and "abert" in low:
+        return _hours(all_day=True)
+    if "encerrad" in low or "fechad" in low:
+        return _hours(closed=True)
+    m = re.match(r"(\d{1,2}:\d{2})\s*-\s*(\d{1,2}:\d{2})", t)
+    if not m:
+        return None
+    o, c = _hhmm(m.group(1)), _hhmm(m.group(2))
+    return _hours(windows=[[o, c]]) if o is not None and c is not None else None
+
+
+def enrich_portugal(rows, workers=8, max_age_days=7):
+    """Fill in opening hours for the Portuguese stations on this route.
+
+    One call per station, so it runs only on the shortlist and keeps what
+    it learns. DGEG publish four rows: weekdays, Saturday, Sunday and a
+    holiday row, which is one more than France and Spain manage.
+    """
+    from concurrent.futures import ThreadPoolExecutor
+    store = CACHE / "fuel_portugal_hours.json"
+    try:
+        known = json.loads(store.read_text())
+    except Exception:
+        known = {}
+    fresh = time.time() - max_age_days * 86400
+    want = [r for r in rows
+            if str(r.get("pt_id")) not in known
+            or (known[str(r["pt_id"])].get("at", 0) < fresh)]
+
+    def fetch(r):
+        body = get_text(f"{PT_API}/GetDadosPosto?id={r['pt_id']}")
+        try:
+            return r["pt_id"], (json.loads(body)["resultado"] or {}).get("HorarioPosto") or {}
+        except Exception:
+            return r["pt_id"], {}
+
+    if want:
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            for pid, h in pool.map(fetch, want):
+                known[str(pid)] = {"at": time.time(), "h": h}
+        try:
+            store.write_text(json.dumps(known))
+        except OSError:
+            pass
+
+    for r in rows:
+        h = (known.get(str(r.get("pt_id"))) or {}).get("h") or {}
+        week = _pt_window(h.get("DiasUteis"))
+        sat = _pt_window(h.get("Sabado")) or week
+        sun = _pt_window(h.get("Domingo")) or week
+        hol = _pt_window(h.get("Feriado"))
+        r["ff_hours"] = {d: (week or _hours()) for d in FF_DAYS[:5]}
+        r["ff_hours"]["saturday"] = sat or _hours()
+        r["ff_hours"]["sunday"] = sun or _hours()
+        if hol:
+            r["pt_holiday_hours"] = hol
+    return rows
+
+
+
 # ----------------------------------------------------------------- which register covers where
 
 def _near(stations, coords, corridor_miles=3.0):
@@ -2237,6 +2411,10 @@ FUEL_REGISTERS = [
     {"name": "Spanish Ministry register", "key": "spain", "box": (35.9, 43.9, -9.4, 4.4),
      "load": load_spain,
      "note": "Real Decreto-ley 6/2000, published by MITECO"},
+
+    {"name": "DGEG Portugal", "key": "portugal", "box": (36.9, 42.2, -9.6, -6.1),
+     "load": load_portugal, "enrich": enrich_portugal,
+     "note": "hours come one station at a time, so only the shortlist is asked"},
 ]
 
 
@@ -2258,6 +2436,14 @@ def statutory_near_route(coords):
         except Exception as e:
             problems.append(f"{reg['name']} unavailable: {str(e)[:70]}")
             continue
+        if rows and reg.get("enrich"):
+            # Some registers keep opening hours one call deeper. Those are
+            # fetched here, for the handful of stations beside this route,
+            # rather than for the whole country.
+            try:
+                rows = reg["enrich"](rows)
+            except Exception as e:
+                problems.append(f"{reg['name']} hours unavailable: {str(e)[:60]}")
         if rows:
             found += rows
             used.append(reg["key"])
@@ -2461,10 +2647,15 @@ def build_plan(o):
         grade = next((g for g in ("E10", "E5", "B7S")
                       if sum(1 for s in usable if s.get("prices", {}).get(g)) > 1), None)
         priced = [s for s in usable if s.get("prices", {}).get(grade)] if grade else []
-        if len(priced) > 1:
+        # The stop this tool picked has to carry a price in the same grade,
+        # or there is nothing to compare. One version defaulted a missing
+        # price to a billion when testing and to zero when subtracting,
+        # and printed a saving of minus 199.9 cents a litre outside Lisbon.
+        here = pick.get("prices", {}).get(grade) if grade else None
+        if len(priced) > 1 and here:
             best = min(priced, key=lambda s: s["prices"][grade])
-            if best is not pick and best["prices"][grade] < pick["prices"].get(grade, 1e9) - 2:
-                plan["cheaper"] = (best, pick["prices"].get(grade, 0) - best["prices"][grade])
+            if best is not pick and best["prices"][grade] < here - 2:
+                plan["cheaper"] = (best, here - best["prices"][grade])
                 plan["cheaper_grade"] = grade
     return plan
 

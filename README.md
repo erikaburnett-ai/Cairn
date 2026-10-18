@@ -68,7 +68,7 @@ Measured on one 110-mile stretch of the A9:
 | Range | works out where the tank hits your reserve |
 | Stops | every forecourt reachable before that, open at your arrival time |
 | Closures | live, from 17 national sources, matched to the roads you use |
-| Fuel data | three statutory registers: Britain, France, Spain. 29,000 forecourts with published hours |
+| Fuel data | four statutory registers: Britain, France, Spain, Portugal. 32,000 forecourts with published hours |
 | Bank holidays | the statutory holiday timetable, per nation, where it differs |
 | Rerouting | locates a closure, blocks it, routes around it |
 | Diversion | the extra miles feed back into the fuel plan |
@@ -309,8 +309,9 @@ other two are just as open.
 | Great Britain | Fuel Finder, Motor Fuel Price (Open Data) Regulations 2025 | 8,139 | per day, plus a bank holiday row | 6 grades |
 | France | prix-carburants, Licence Ouverte | 9,799 | per day, plus a 24-hour card flag | 5 grades |
 | Spain | MITECO, Real Decreto-ley 6/2000 | 11,429 | per day, lunch closings included | 11 grades |
+| Portugal | DGEG | 3,118 | weekday, Saturday, Sunday and a holiday row | 3 grades |
 
-29,367 forecourts with hours published by law. Everywhere else still falls
+32,485 forecourts with hours published by law. Everywhere else still falls
 back to OpenStreetMap. That knows where the stations are. Three times in
 four it has no opening hours for them.
 
@@ -327,8 +328,21 @@ in the middle. Britain's register has one window a day and the model here had
 to grow a second before Spain could be read at all. Spanish day letters run
 L M X J V S D, so X is Wednesday.
 
-Neither France nor Spain publishes a public holiday row. Britain's does, and
-this tool uses it. On 1 November in Spain you are on your own.
+Portugal keeps its hours one call deeper than its prices. Asking for all
+three thousand would be a lot of calls for one journey, so the hours are
+fetched only for the stations that make the shortlist on your route, and
+kept once they are.
+
+France and Spain publish no public holiday row. Britain and Portugal do, and
+this tool reads both, which for Portugal means working out Easter, since
+three of its thirteen national days move with it. Municipal holidays are not
+in the data: Lisbon shuts for St Anthony on 13 June and Porto for St John on
+the 24th, and no register has a field for that. On 1 November in Spain you
+are on your own.
+
+Opening hours now carry three states. Open, shut, and nobody said. 602 French forecourts are marked closed on a Sunday by the register
+itself, and reporting those as "hours unknown" threw away the half of the
+answer that was there.
 
 ### Adding a country
 

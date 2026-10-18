@@ -9,7 +9,7 @@ HTML changing breaks the live test and leaves the logic tests honest.
 """
 
 import json, sys, unittest
-from datetime import datetime
+from datetime import date, datetime
 
 import fuelrun as fr
 
@@ -622,6 +622,64 @@ class Money(unittest.TestCase):
 
 
 
+class ThreeStates(unittest.TestCase):
+    """Open, shut, and nobody said. Two states throws away the half of the
+    answer the register did give."""
+
+    def test_shut_and_unknown_are_different(self):
+        at = datetime(2026, 10, 19, 10, 0)
+        shut = {"ff_hours": {d: fr._hours(closed=True) for d in fr.FF_DAYS}}
+        quiet = {"ff_hours": {d: fr._hours() for d in fr.FF_DAYS}}
+        self.assertIs(fr.ff_open_at(shut, at), False)
+        self.assertIsNone(fr.ff_open_at(quiet, at))
+
+    def test_a_french_card_machine_beats_a_closed_kiosk(self):
+        day = fr._hours(all_day=True, closed=False)
+        st = {"ff_hours": {d: day for d in fr.FF_DAYS}}
+        self.assertIs(fr.ff_open_at(st, datetime(2026, 10, 19, 3, 0)), True)
+
+
+class PortugueseHolidays(unittest.TestCase):
+    """DGEG publish a holiday row, the only register outside Britain that
+    does. Three of Portugal's thirteen national dates move with Easter."""
+
+    def test_easter(self):
+        self.assertEqual(fr.easter(2026).isoformat(), "2026-04-05")
+        self.assertEqual(fr.easter(2027).isoformat(), "2027-03-28")
+        self.assertEqual(fr.easter(2030).isoformat(), "2030-04-21")
+
+    def test_corpus_christi_moves_with_it(self):
+        h = fr.pt_holidays(2026)
+        self.assertIn(date(2026, 6, 4), h)
+        self.assertIn(date(2026, 4, 25), h)
+        self.assertEqual(len(h), 13)
+
+    def test_the_holiday_row_wins_on_a_holiday(self):
+        st = {"source": "portugal",
+              "ff_hours": {d: fr._hours(windows=[[480, 1200]]) for d in fr.FF_DAYS},
+              "pt_holiday_hours": fr._hours(closed=True)}
+        self.assertIs(fr.ff_open_at(st, datetime(2026, 4, 25, 10, 0)), False)
+        self.assertIs(fr.ff_open_at(st, datetime(2026, 4, 24, 10, 0)), True)
+
+    def test_a_station_with_no_holiday_row_keeps_its_weekday(self):
+        st = {"source": "portugal",
+              "ff_hours": {d: fr._hours(windows=[[480, 1200]]) for d in fr.FF_DAYS}}
+        self.assertIs(fr.ff_open_at(st, datetime(2026, 4, 25, 10, 0)), True)
+
+
+
+class CheaperThanThis(unittest.TestCase):
+    def test_a_saving_is_never_negative(self):
+        """It printed "-199.9c/L less" outside Lisbon, because a missing
+        price defaulted to a billion in the test and to zero in the sum."""
+        src = open(fr.__file__).read()
+        i = src.index('plan["cheaper"]')
+        window = src[i - 700:i + 200]
+        self.assertNotIn('pick["prices"].get(grade, 0)', window)
+        self.assertIn("here", window)
+
+
+
 # ----------------------------------------------------------------- live
 
 @unittest.skipUnless(LIVE, "pass --live to hit the real feeds")
@@ -645,10 +703,36 @@ class LiveProviders(unittest.TestCase):
     def test_denmark(self):            self.check(fr.p_vejdirektoratet, 20)
     def test_sweden_via_denmark(self): self.check(fr.p_swedish_via_denmark, 10)
 
+    def test_every_registered_provider_answers(self):
+        """Eight of the seventeen had no live test at all, so a feed could
+        go dark and the suite stayed green. This walks the registry itself,
+        so a provider added later is covered without anybody remembering."""
+        import io, contextlib
+        dead = []
+        for pr in fr.PROVIDERS:
+            try:
+                with contextlib.redirect_stderr(io.StringIO()):
+                    got = pr["fn"](set()) if pr.get("per_road") else pr["fn"]()
+            except Exception as e:
+                dead.append(f"{pr['name']}: {str(e)[:60]}")
+                continue
+            # Germany is queried per road and is handed no roads here, so
+            # an empty answer from it is correct.
+            if not got and not pr.get("per_road"):
+                dead.append(f"{pr['name']}: returned nothing")
+        self.assertEqual(dead, [], "these feeds are down or changed: " + "; ".join(dead))
+
     def test_france_register(self):
         rows = fr.load_france()
         self.assertGreater(len(rows), 8000)
         self.assertTrue(any(r['prices'] for r in rows))
+
+    def test_portugal_register(self):
+        rows = fr.load_portugal()
+        self.assertGreater(len(rows), 2500)
+        self.assertTrue(any(r["prices"] for r in rows))
+        fr.enrich_portugal(rows[:10])
+        self.assertTrue(any(r["ff_hours"] for r in rows[:10]))
 
     def test_spain_register(self):
         rows = fr.load_spain()
