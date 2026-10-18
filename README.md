@@ -63,7 +63,7 @@ hours alone. Fuel Finder UK is the exception found so far: since 14 October
 2026 its route planner has estimated whether a station will be open when you
 arrive. So the hours are in use elsewhere. What has not turned up anywhere
 else is doing it offline, on hardware you own, alongside live closures from
-nineteen national road authorities.
+19 national sources.
 
 Measured on one 110-mile stretch of the A9:
 
@@ -409,7 +409,7 @@ other two are just as open.
 
 | Country | Register | Forecourts | Hours | Prices |
 |---|---|---|---|---|
-| Great Britain | Fuel Finder (Motor Fuel Price (Open Data) Regulations 2025), read through [matthewgall's hourly archive](https://github.com/matthewgall/fuelfinder-archive) | 8,138 | per day, plus a bank holiday row | 6 grades |
+| United Kingdom | Fuel Finder (Motor Fuel Price (Open Data) Regulations 2025), read through [matthewgall's hourly archive](https://github.com/matthewgall/fuelfinder-archive) | 8,138 | per day, plus a bank holiday row | 6 grades |
 | France | prix-carburants, Licence Ouverte | 9,805 | per day, plus a 24-hour card flag | 5 grades |
 | Spain | MITECO, Real Decreto-ley 6/2000 | 11,422 | per day, lunch closings included | 11 grades |
 | Portugal | DGEG | 3,118 | weekday, Saturday, Sunday and a holiday row | 3 grades |
@@ -485,7 +485,8 @@ away. The tool read the machine's clock, got 17:48, checked Portuguese
 opening hours against it, and called every shut forecourt open. It was
 01:48 in Portugal.
 
-So no time in this tool comes from the machine any more.
+So opening hours are judged where each forecourt stands. The page's own
+"made at" stamp still comes from the machine that wrote it.
 
 - Departure, when you do not give one, is now where the car is.
 - Times printed stay on the driver's watch, the clock at the start of the run.
@@ -510,7 +511,7 @@ Recorded so the next person does not have to find out.
 | Country | What stops it |
 |---|---|
 | Czechia | `dopravniinfo.cz` does not answer a connection from here. Not a 403, no SYN-ACK at all, on every address tried. |
-| Poland | `drogi.gddkia.gov.pl` sits behind Incapsula bot protection, and getting round that is not something this tool is going to do. |
+| Poland | `drogi.gddkia.gov.pl` sits behind Incapsula bot protection. Defeating that is out of scope. |
 | Switzerland | The only incident feed is `api.opentransportdata.swiss`, token required. The EU access points want a member-state entity. A Swiss token looks obtainable with an email address. Not wired up. |
 
 Italy's ministry host behaves like Czechia's, which is why the Italian fuel

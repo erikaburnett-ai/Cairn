@@ -5,7 +5,7 @@ Runs on a machine you own. Polls the closure feeds on your own wifi, keeps
 the fuel dataset warm in memory, and answers your phone over your own VPN.
 No cloud, no subscription, nobody in the middle.
 
-Standard library only. No pip install. Python 3.8 or later.
+Standard library only. No pip install. Python 3.9 or later.
 
     python3 cairn-serve.py                  # localhost only
     python3 cairn-serve.py --bind 0.0.0.0   # reachable over your VPN

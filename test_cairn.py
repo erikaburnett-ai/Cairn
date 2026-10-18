@@ -256,7 +256,7 @@ class CrossBorder(unittest.TestCase):
 
 
 class OsmHours(unittest.TestCase):
-    """The OSM opening_hours string, used everywhere outside Great Britain."""
+    """The OSM opening_hours string, used wherever no national register covers."""
 
     def test_always_open(self):
         self.assertIs(fr.parse_hours("24/7", datetime(2026, 10, 16, 3, 0)), True)

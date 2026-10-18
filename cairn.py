@@ -1264,9 +1264,8 @@ def p_hak():
 
     Worth the trouble for one thing nobody else gives: HAK print their own
     recommended diversion, as "Obilazak: cvor Bisko (A1)-DC220-ZC6260-cvor
-    Split (A1)". That is the road authority's answer to the question this
-    tool spent the morning computing, written out by the people who closed
-    the road.
+    Split (A1)". HAK are the Croatian motoring club rather than the road authority, and
+    they print the diversion the operator has signed.
     """
     x = get_text("https://www.hak.hr/info/stanje-na-cestama")
     if "<li>" not in (x or ""):
@@ -2292,6 +2291,18 @@ def closes_at(spec, when):
 
 # ----------------------------------------------------------------- phone handout
 
+# The handout credited OpenStreetMap on every page, including the four
+# national registers, each of which carries its own licence and asks to be
+# named. The README tells contributors to credit their data; the page did not.
+FUEL_CREDIT = {
+    "fuelfinder": "Fuel: UK Fuel Finder register, Open Government Licence v3.0.",
+    "france":     "Fuel: prix-carburants.gouv.fr, Licence Ouverte.",
+    "spain":      "Fuel: Spanish Ministry register (MITECO).",
+    "portugal":   "Fuel: DGEG register, Portugal.",
+    "italy":      "Fuel: MIMIT register via a public mirror, IODL 2.0.",
+}
+
+
 def write_plan(path, plan):
     """A single self-contained page for the passenger's phone.
 
@@ -2357,19 +2368,38 @@ def write_plan(path, plan):
     # Traffic Scotland" on every page, including a run from Dublin to
     # Belfast or Oslo to Trondheim. A card in a glovebox is only worth
     # anything if the number on it rings somebody who can come out.
-    in_uk = any(n in plan.get("providers", [])
-                for n in ("Traffic Scotland", "National Highways",
-                          "Traffic Wales", "TrafficwatchNI"))
-    if in_uk:
-        phones = ('<a class="tel wide" href="tel:08000281414">Traffic Scotland '
-                  '&nbsp;0800 028 1414</a>\n'
-                  '<a class="tel wide" href="tel:03001235000">National Highways '
-                  '&nbsp;0300 123 5000</a>\n'
-                  '<a class="tel wide" href="sms:07380283600">Text roadside help '
-                  '&nbsp;0738 028 3600</a>\n'
-                  '<div class="note">Both lines are 24 hours. The text number is for '
-                  'roadside assistance when a phone call won\'t work. '
-                  'Emergencies are 999, and 112 also works.</div>')
+    # Each nation runs its own line, so the page carries the one for the
+    # roads actually on this route. A Belfast run used to print the Scottish
+    # and English numbers, neither of which covers those roads.
+    UK_LINES = [
+        ("Traffic Scotland",  "Traffic Scotland", "0800 028 1414"),
+        ("National Highways", "National Highways", "0300 123 5000"),
+        ("Traffic Wales",     "Traffic Wales", "0300 123 1213"),
+        ("TrafficwatchNI",    "DfI Roads (NI)", "0300 200 7899"),
+    ]
+    # Which provider was consulted is the wrong test: England's bounding box
+    # reaches 56N and contains Glasgow, so a wholly Scottish run printed the
+    # English number. uk_division draws the real border and is already tested
+    # against Carlisle, Gretna, Berwick and Coldstream.
+    coords = plan.get("coords") or []
+    step = max(1, len(coords) // 200)
+    nations = {uk_division(la, lo) for la, lo in coords[::step]
+               if 49.8 <= la <= 61.0 and -8.7 <= lo <= 2.0}
+    BY_NATION = {"scotland": "Traffic Scotland",
+                 "england-and-wales": "National Highways",
+                 "northern-ireland": "TrafficwatchNI"}
+    want = {BY_NATION[n] for n in nations if n in BY_NATION}
+    if "Traffic Wales" in plan.get("providers", []) and "england-and-wales" in nations:
+        want.add("Traffic Wales")
+    here = [(label, num) for prov, label, num in UK_LINES if prov in want]
+    if here:
+        phones = "\n".join(
+            f'<a class="tel wide" href="tel:{num.replace(" ", "")}">{label}'
+            f'&nbsp;&nbsp;{num}</a>' for label, num in here)
+        phones += ('\n<div class="note">Emergencies are 999, and 112 also works. '
+                   'Put your own recovery service in your phone before you go: '
+                   'these lines report road problems and do not come out to you.'
+                   '</div>')
     else:
         phones = ('<a class="tel wide" href="tel:112">Emergency &nbsp;112</a>\n'
                   '<div class="note">112 reaches police, fire and ambulance in every '
@@ -2388,7 +2418,7 @@ def write_plan(path, plan):
     used = sorted({i["source"] for i in hits}) or plan.get("providers", [])
     sources = ("Fuel: UK Fuel Finder, Open Government Licence v3.0."
                if plan.get("source") == "fuelfinder" else
-               "Fuel: OpenStreetMap, Open Database Licence."
+               FUEL_CREDIT.get(plan.get("source"), "Fuel: OpenStreetMap, Open Database Licence.")
                if plan.get("source") else "Fuel: lookup failed for this route.")
     sources += "<br>Closures: " + (", ".join(used) if used else "none covering this route")
 
@@ -3328,8 +3358,8 @@ def build_plan(o):
 def cross_check(stations, coords):
     """Second-source every stop against OpenStreetMap.
 
-    Idea owed to a suggestion about satellite ground truth. The statutory
-    register is authoritative for Great Britain, so anything OSM has that
+     The statutory
+    register is authoritative for the United Kingdom, so anything OSM has that
     the register does not has very likely closed. Anything in both is as
     confirmed as it gets without driving there.
     """

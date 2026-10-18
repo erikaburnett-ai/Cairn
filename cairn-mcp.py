@@ -81,7 +81,7 @@ TOOLS = [
         "arrival time, and which way round if a road is shut. Returns "
         "distance, time, range, every reachable forecourt with its opening "
         "state and prices, live closures on the roads used, and any "
-        "diversion. Covers the UK, Ireland and 14 EU member states for "
+        "diversion. Covers the UK, Norway and 14 EU member states for "
         "closures, and five national fuel registers.",
      "inputSchema": JOURNEY},
 
