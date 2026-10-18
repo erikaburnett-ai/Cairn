@@ -8,7 +8,7 @@ The offline tests use fixtures copied from real responses, so a provider's
 HTML changing breaks the live test and leaves the logic tests honest.
 """
 
-import json, sys, unittest
+import json, sys, time, unittest
 from datetime import date, datetime
 
 import fuelrun as fr
@@ -767,6 +767,74 @@ class WhatTimeIsItThere(unittest.TestCase):
 
 
 
+class Italy(unittest.TestCase):
+    """Autostrade's feeds carry service-area noise and future roadworks,
+    and the register carries prices with no hours at all."""
+
+    def _one(self, name, row):
+        real = fr.get_text
+        fr.get_text = lambda url, **k: json.dumps(
+            {"events": [row]} if name in url else {"events": []})
+        try:
+            return fr.p_autostrade()
+        finally:
+            fr.get_text = real
+
+    def test_a_broken_motorhome_tap_is_not_a_road_condition(self):
+        # 22 of 66 live events on a quiet Sunday were this.
+        got = self._one("eventi", {"t_des_fra_it": "Camper Service chiuso",
+                                   "c_str": "A01", "t_des_it": "x"})
+        self.assertEqual(got, [], "a service-area amenity was listed as traffic")
+
+    def test_a_closed_exit_is_not_a_closed_motorway(self):
+        got = self._one("eventi", {"t_des_fra_it": "Uscita Chiusa", "c_str": "A14",
+                                   "t_des_it": "Uscita chiusa a Rimini"})
+        self.assertEqual(got[0]["type"], "ramp closure")
+        self.assertGreater(fr._rank("ramp closure"), fr._rank("road closure"))
+
+    def test_lorries_only_is_not_everybody(self):
+        got = self._one("eventi", {"t_des_fra_it": "Chiusura Pesanti", "c_str": "A01",
+                                   "t_des_it": "x"})
+        self.assertEqual(got[0]["type"], "lorry restriction")
+
+    def test_road_codes_lose_their_padding(self):
+        got = self._one("eventi", {"t_des_fra_it": "Coda", "c_str": "A01",
+                                   "t_des_it": "Coda"})
+        self.assertEqual(got[0]["roads"], {"A1"}, "A01 never matches a route's A1")
+
+    def test_works_that_start_next_month_are_not_live(self):
+        future = (time.time() + 30 * 86400) * 1000
+        real = fr.get_text
+        fr.get_text = lambda url, **k: json.dumps(
+            [{"c_str": "A01", "d_ora_nst": future, "t_des_sgn": "Corsia Unica",
+              "n_lat": 44.0, "n_lon": 11.0}] if "cantieri" in url else {"events": []})
+        try:
+            self.assertEqual(fr.p_autostrade(), [])
+        finally:
+            fr.get_text = real
+
+
+class NoHoursAtAll(unittest.TestCase):
+    """Italy's register publishes prices and no opening hours, so every
+    Italian stop is unknown and the plan said "nothing confirmed open,
+    fuel before departure" on a 350 mile drive. That is worse than no
+    advice."""
+
+    def test_the_fallback_exists_and_is_labelled(self):
+        src = open(fr.__file__).read()
+        i = src.index('plan["unverified_hours"]')
+        window = src[i:i + 900]
+        self.assertIn('s["open"] is None', window)
+        self.assertIn("Ring ahead", window)
+
+    def test_a_station_known_shut_is_never_the_fallback(self):
+        src = open(fr.__file__).read()
+        i = src.index('plan["unverified_hours"] = False')
+        self.assertIn('s["open"] is None', src[i:i + 400])
+        self.assertNotIn('s["open"] is False', src[i:i + 400])
+
+
+
 # ----------------------------------------------------------------- live
 
 @unittest.skipUnless(LIVE, "pass --live to hit the real feeds")
@@ -813,6 +881,13 @@ class LiveProviders(unittest.TestCase):
         rows = fr.load_france()
         self.assertGreater(len(rows), 8000)
         self.assertTrue(any(r['prices'] for r in rows))
+
+    def test_italy_register(self):
+        rows = fr.load_italy()
+        self.assertGreater(len(rows), 15000)
+        self.assertTrue(any(r["prices"] for r in rows))
+        self.assertFalse(any(r.get("misplaced") for r in rows),
+                         "the mirror's own bad-coordinate flag was ignored")
 
     def test_portugal_register(self):
         rows = fr.load_portugal()

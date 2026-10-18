@@ -67,8 +67,8 @@ Measured on one 110-mile stretch of the A9:
 |---|---|
 | Range | works out where the tank hits your reserve |
 | Stops | every forecourt reachable before that, open at your arrival time |
-| Closures | live, from 17 national sources, matched to the roads you use |
-| Fuel data | four statutory registers: Britain, France, Spain, Portugal. 32,000 forecourts with published hours |
+| Closures | live, from 18 national sources, matched to the roads you use |
+| Fuel data | five national registers: Britain, France, Spain, Portugal, Italy. 54,000 forecourts |
 | Bank holidays | the statutory holiday timetable, per nation, where it differs |
 | Rerouting | locates a closure, blocks it, routes around it |
 | Diversion | the extra miles feed back into the fuel plan |
@@ -270,6 +270,7 @@ That second one reads OPEN on its weekday row.
 | Luxembourg | CITA | DATEX II v3.6, CC0 |
 | Slovenia | DARS | Atom feed, no key |
 | Spain | DGT | DATEX II, no key |
+| Italy | Autostrade per l'Italia's own map files | no key, their network only |
 | Netherlands | NDW | DATEX II, no key |
 | Norway | the service behind vegvesen.no's own map | no key, undocumented |
 | Denmark | Vejdirektoratet map layers | open bucket, no key |
@@ -297,6 +298,12 @@ and those are open.
 
 Look for the public route before writing a country off.
 
+This is not a preference. Several National Access Points will only register
+a citizen or a company of their own member state. So "registration required" on a European feed means
+permanently shut here, and a country is covered through its public channels
+or it is not covered. Every provider in the table above needs no account. That is a hard
+requirement here.
+
 Routing: OSRM or GraphHopper. Geocoding: Nominatim, postcodes.io, or OS
 Code-Point Open.
 
@@ -311,8 +318,10 @@ other two are just as open.
 | France | prix-carburants, Licence Ouverte | 9,799 | per day, plus a 24-hour card flag | 5 grades |
 | Spain | MITECO, Real Decreto-ley 6/2000 | 11,429 | per day, lunch closings included | 11 grades |
 | Portugal | DGEG | 3,118 | weekday, Saturday, Sunday and a holiday row | 3 grades |
+| Italy | MIMIT, through a daily mirror | 21,481 | none published | 2 grades |
 
-32,485 forecourts with hours published by law. Everywhere else still falls
+32,485 forecourts with hours published by law, and 21,481 more in Italy
+with prices and no hours at all. Everywhere else still falls
 back to OpenStreetMap. That knows where the stations are. Three times in
 four it has no opening hours for them.
 
@@ -399,19 +408,34 @@ So no time in this tool comes from the machine any more.
 - Norwegian Finnmark pokes into the Finnish box, and those two are an hour
   apart, so the Finnish entry carries two holes for it.
 
+### The three countries that are shut
+
+Recorded so the next person does not have to find out.
+
+| Country | What stops it |
+|---|---|
+| Czechia | `dopravniinfo.cz` does not answer a connection from here. Not a 403, no SYN-ACK at all, on every address tried. |
+| Poland | `drogi.gddkia.gov.pl` sits behind Incapsula bot protection, and getting round that is not something this tool is going to do. |
+| Switzerland | The only incident feed is `api.opentransportdata.swiss`, token required. The EU access points want a member-state entity. A Swiss token looks obtainable with an email address. Not wired up. |
+
+Italy's ministry host behaves like Czechia's, which is why the Italian fuel
+data comes through a mirror and the closures come from the motorway operator.
+
 ## Known limits
 
 | | |
 |---|---|
 | Scraping | 7 of 17 providers read a web page or an undocumented API and will break on redesign |
-| Coverage | 11 EU member states of 27, plus the UK and Norway. Most of the rest put their feed behind an account |
-| Sweden | only the Skane roadworks Denmark relays. Trafikverket's own feed needs an account |
+| Coverage | 12 EU member states of 27, plus the UK and Norway. Most of the rest put their feed behind an account |
+| Sweden | only the Skane roadworks Denmark relays. Trafikverket's own feed needs an account, and that door is shut for good |
 | Borders | road numbers repeat across countries, and bounding boxes overlap at the border |
 | Data errors | Forecourt Trader found every supermarket site in Fuel Finder mislabelled |
 | Snapshots | the offline page states when it was made |
 | Consumption | one flat mpg figure, no hills, load, weather or speed |
 | Border clocks | Miranda do Douro, Vila Real de Santo Antonio and Tui read as the wrong side, each about two miles from the line |
-| Hours outside GB, France and Spain | OpenStreetMap only, and it reports `no hours recorded` |
+| Hours outside GB, France, Spain and Portugal | none. Italy's register has no hours field, and everywhere else falls to OpenStreetMap |
+| Italy | Autostrade's network only, so no ANAS state roads and no other concessionaire. Fuel prices come through a volunteer's mirror |
+| Zone labels | Munich prints as Vienna time and Nice as Rome time. Same clock to the minute, wrong city on the label |
 | Holidays outside GB | no register outside Britain publishes a holiday timetable |
 | Overpass | two mirrors left, both rate-limited. An empty answer from one is treated as a failure, not an answer |
 

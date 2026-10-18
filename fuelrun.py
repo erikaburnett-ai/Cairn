@@ -1308,6 +1308,95 @@ def p_swedish_via_denmark():
     return _dk_layer("current-swedish-roadworks", "Sweden (relayed by Denmark)")
 
 
+# ----------------------------------------------------------------- Italy, closures
+
+ASPI = "https://viabilita.autostrade.it/json"
+
+
+def p_autostrade():
+    """Autostrade per l'Italia publish three flat JSON files, no key.
+
+    The ministry's own host will not take a connection from here, and the
+    national access point is a registration wall, so this is the motorway
+    operator's own map data. Coverage is their network, roughly 3,000 km
+    of Italy's 7,000. Autovie Venete, Milano Serravalle, CAV and every
+    ANAS state road are not in here, and the registry note says so.
+
+    Two filters worth keeping. 22 of the 66 live events on a quiet Sunday
+    were "Camper Service chiuso", a motorhome waste point out of order at
+    a service area, which is not a road condition and has no business in a
+    list a driver reads at speed. And the roadworks file carries works
+    that start next month, so it is filtered on its own timestamps.
+    """
+    now_ms = time.time() * 1000
+    out = []
+
+    def pull(name):
+        try:
+            d = json.loads(get_text(f"{ASPI}/{name}.json"))
+        except Exception:
+            return []
+        if isinstance(d, list):
+            return d
+        return next((v for v in d.values() if isinstance(v, list)), [])
+
+    def road_of(r):
+        c = (r.get("c_str") or "").upper()
+        return {c} if re.fullmatch(r"[A-Z]{1,2}\d{1,3}", c) else set()
+
+    for r in pull("incidenti"):
+        lat, lon = r.get("n_crd_lat_ini"), r.get("n_crd_lon_ini")
+        out.append(_norm("Italy", (r.get("t_des_it") or "Incidente")[:70], "accident",
+                         r.get("t_des_dir_it") or "", "", "", road_of(r),
+                         float(lat) if lat else None, float(lon) if lon else None))
+
+    for r in pull("eventi"):
+        fra = (r.get("t_des_fra_it") or "").strip()
+        low = fra.lower()
+        if "camper service" in low:
+            continue
+        if "chiusura pesanti" in low:
+            typ = "lorry restriction"
+        elif "mancanza di" in low:
+            typ = "fuel shortage at services"
+        elif any(w in low for w in ("entrata chiusa", "uscita chiusa", "allacciamento chiuso")):
+            typ = "ramp closure"
+        elif "chiusa" in low or "chiuso" in low:
+            typ = "road closure"
+        elif "coda" in low or "rallentato" in low:
+            typ = "queue"
+        elif any(w in low for w in ("pioggia", "neve", "nebbia", "vento", "ghiaccio")):
+            typ = "weather"
+        else:
+            typ = "incident"
+        lat, lon = r.get("n_crd_lat_ini"), r.get("n_crd_lon_ini")
+        title = (r.get("t_des_en") or r.get("t_des_it") or fra)[:70]
+        out.append(_norm("Italy", title, typ, r.get("t_des_dir_it") or "",
+                         fra, "", road_of(r),
+                         float(lat) if lat else None, float(lon) if lon else None))
+
+    for r in pull("cantieri"):
+        start, end = r.get("d_ora_nst"), r.get("d_ora_rmz_pre")
+        if start and start > now_ms:
+            continue                      # starts next month
+        if end and end < now_ms:
+            continue                      # finished
+        sgn = (r.get("t_des_sgn") or "").strip()
+        low = sgn.lower()
+        if "corsia unica" in low or "1 corsia" in low:
+            typ = "lane closure"
+        elif "riduzione" in low or "flesso" in low or "deviazione" in low:
+            typ = "roadworks"
+        else:
+            typ = "minor roadworks"
+        lat, lon = r.get("n_lat"), r.get("n_lon")
+        where = (r.get("t_des_trt") or r.get("t_des") or "").strip().title()
+        out.append(_norm("Italy", f"{(r.get('c_str') or '').upper()} {where}"[:70], typ,
+                         r.get("t_des_dir") or "", sgn, "", road_of(r),
+                         float(lat) if lat else None, float(lon) if lon else None))
+    return out
+
+
 PROVIDERS = [
     {"name": "Traffic Scotland", "not_box": IRELAND, "box": (54.6, 61.0, -8.7, -0.7), "match": "roads",
      "fn": p_traffic_scotland, "note": "scraped public page"},
@@ -1350,6 +1439,11 @@ PROVIDERS = [
      "fn": lambda: p_datex2("Spain",
          "https://infocar.dgt.es/datex2/sct/SituationPublication/all/content.xml"),
      "note": "DGT open DATEX II, no key"},
+
+    {"name": "Italy", "box": (35.4, 47.1, 6.6, 18.6), "match": "coords",
+     "fn": p_autostrade,
+     "note": "Autostrade per l'Italia's own map files. Their network only, "
+             "so no ANAS state roads and no other concessionaire"},
 
     {"name": "Netherlands", "box": (50.7, 53.6, 3.3, 7.3), "match": "coords",
      "fn": lambda: p_datex2_bulk("Netherlands",
@@ -2167,7 +2261,12 @@ def write_plan(path, plan):
         ws = "".join(f"<li>{w}</li>" for w in plan["incident_error"].split("; "))
         warn_block = f"<h2>Trust this less</h2><ul class='late'>{ws}</ul>"
 
-    if plan.get("source") is None:
+    if plan.get("unverified_hours"):
+        stops_block = ('<div class="warn">No register published opening hours for '
+                       'these. They are sorted by distance and none is confirmed '
+                       'open. Ring ahead where you can.</div>'
+                       + "".join(card(s) for s in scored[:14]))
+    elif plan.get("source") is None:
         stops_block = ('<div class="warn">The fuel lookup failed when this page was '
                        'made, so there are no stops on it. That is not the same as '
                        'there being none on the road. Fill up before you set off.</div>')
@@ -2263,6 +2362,83 @@ def money(minor, currency="GBP", per_litre=True):
     if minor < 100:
         return f"{minor:.1f}{minor_name}{tail}"
     return f"{major}{minor / 100:.2f}{tail}"
+
+
+# ----------------------------------------------------------------- Italy
+
+# MIMIT runs the Osservatorio Prezzi Carburanti and publishes two CSVs a
+# day, and their host will not take a connection from here at all. Not a
+# 403, not a redirect: no answer to a TCP handshake, tried on three
+# addresses over an hour. Other Italian government hosts answer fine, so
+# it is that one.
+#
+# So this reads a third-party daily mirror, the same arrangement already
+# used for the British register, and says so out loud. Two things to know
+# about it. It is one volunteer's GitHub Action, and if it stops the
+# provider health check is what notices. And the Italian register carries
+# no opening hours at all, so every Italian stop reports its hours as
+# unknown, which is the truth rather than a shrug.
+IT_SNAPSHOT = "https://raw.githubusercontent.com/stexcx/fuelmap-dati/main/snapshot.json"
+
+
+def load_italy(max_age_hours=6):
+    """21,528 forecourts with prices. No hours in the source."""
+    parsed = CACHE / "fuel_italy.json"
+    if parsed.exists() and (time.time() - parsed.stat().st_mtime) < max_age_hours * 3600:
+        return json.loads(parsed.read_text())
+
+    raw = CACHE / "fuel_italy_raw.json"
+    d = None
+    if raw.exists() and (time.time() - raw.stat().st_mtime) < max_age_hours * 3600:
+        try:
+            d = json.loads(raw.read_text())
+        except ValueError:
+            raw.unlink(missing_ok=True)
+    if d is None:
+        subprocess.run(["curl", "-sL", "--compressed", "--max-time", "120",
+                        "-A", UA, "-o", str(raw), IT_SNAPSHOT],
+                       capture_output=True, timeout=180)
+        try:
+            d = json.loads(raw.read_text())
+        except (ValueError, OSError):
+            raw.unlink(missing_ok=True)
+            raise RuntimeError("Italian mirror download failed")
+
+    # The mirror says when the ministry last extracted. A price three days
+    # old is still worth having and the age belongs on the screen.
+    stamp = (d.get("updatedAt") or "")[:10]
+    grades = {"benzina": "E5", "diesel": "B7S"}
+    out = []
+    for r in d.get("stations") or []:
+        try:
+            lat, lon = float(r["lat"]), float(r["lng"])
+        except (TypeError, ValueError, KeyError):
+            continue
+        prices = {}
+        for k, g in grades.items():
+            v = (r.get("prices") or {}).get(k)
+            if isinstance(v, (int, float)) and v > 0:
+                prices[g] = float(v) * 100
+        brand = (r.get("brand") or "").strip()
+        city = (r.get("city") or "").strip().title()
+        out.append({
+            "name": ", ".join(x for x in (brand, city) if x) or (r.get("name") or "Distributore"),
+            "brand": brand, "lat": lat, "lon": lon, "phone": "",
+            "temp_closed": False, "motorway": False, "toilets": False,
+            "addr": (r.get("address") or "").strip().title(),
+            # Their own flag for a coordinate they do not trust. 47 of
+            # 21,528. Sending somebody to a pump that is not there is the
+            # one thing worse than sending them nowhere.
+            "misplaced": bool(r.get("misplaced")),
+            "prices": prices, "currency": "EUR", "priced_on": stamp,
+            "ff_hours": {d2: _hours() for d2 in FF_DAYS}, "source": "italy",
+        })
+    out = [r for r in out if not r["misplaced"]]
+    if not out:
+        raise RuntimeError("Italian mirror had no usable stations")
+    parsed.write_text(json.dumps(out))
+    return out
+
 
 
 # ----------------------------------------------------------------- Portugal
@@ -2420,6 +2596,10 @@ FUEL_REGISTERS = [
      "load": load_spain,
      "note": "Real Decreto-ley 6/2000, published by MITECO"},
 
+    {"name": "MIMIT Italy, via mirror", "key": "italy", "box": (35.4, 47.1, 6.6, 18.6),
+     "load": load_italy,
+     "note": "prices only, no hours published. Ministry host unreachable, so a daily mirror"},
+
     {"name": "DGEG Portugal", "key": "portugal", "box": (36.9, 42.2, -9.6, -6.1),
      "load": load_portugal, "enrich": enrich_portugal,
      "note": "hours come one station at a time, so only the shortlist is asked"},
@@ -2549,6 +2729,12 @@ ZONES = [
     ((49.4, 50.2, 5.7, 6.6), "Europe/Luxembourg", []),
     ((49.4, 51.6, 2.5, 6.0), "Europe/Brussels", []),
     ((50.7, 53.6, 3.3, 7.3), "Europe/Amsterdam", []),
+    ((45.83, 47.81, 5.96, 10.50), "Europe/Zurich", []),
+    # Italy before France, or Milan and Turin read as Paris. The hole is
+    # the French side of the Alps and the Riviera, which the Italian box
+    # reaches over. Every country in this stretch keeps the same clock, so
+    # the stakes here are a label on one line, not an hour.
+    ((35.4, 47.1, 6.6, 18.6), "Europe/Rome", [(43.0, 46.5, 5.0, 7.55)]),
     ((41.3, 51.1, -5.2, 9.6), "Europe/Paris", []),
     ((46.3, 49.1, 9.5, 17.2), "Europe/Vienna", []),
     ((45.4, 46.9, 13.3, 16.6), "Europe/Ljubljana", []),
@@ -2614,7 +2800,8 @@ def _in_polygon(poly, lat, lon):
 # A forecourt that came out of a national register is in that nation, which
 # its own government has already established. No geometry needed.
 REGISTER_ZONES = {"fuelfinder": "Europe/London", "france": "Europe/Paris",
-                  "spain": "Europe/Madrid", "portugal": "Europe/Lisbon"}
+                  "spain": "Europe/Madrid", "portugal": "Europe/Lisbon",
+                  "italy": "Europe/Rome"}
 
 
 def zone_for_station(st, fallback=None):
@@ -2795,6 +2982,25 @@ def build_plan(o):
         plan["verify"] = cross_check(scored, r["coords"])
 
     usable = [s for s in scored if s["open"] is True]
+    # Italy's register publishes prices and no hours at all, so on a Milan
+    # to Rome run every one of 21,000 forecourts reads as unknown and the
+    # plan was "nothing confirmed open, fuel before departure" on a 350
+    # mile drive. That is worse than no advice. Where nothing can be
+    # confirmed, pick the furthest one that is not known to be shut and
+    # say plainly that the hours were never published.
+    plan["unverified_hours"] = False
+    if not usable:
+        maybe = [s for s in scored if s["open"] is None]
+        if maybe:
+            usable = maybe
+            plan["unverified_hours"] = True
+            srcs = sorted({s.get("source") for s in maybe if s.get("source")})
+            if srcs == ["italy"]:
+                notes.append("Italy's register publishes prices and no opening hours, "
+                             "so no stop below can be confirmed open. Ring ahead.")
+            else:
+                notes.append("No stop in range has published hours. The times below "
+                             "are arrival times, not opening times.")
     if usable:
         pick = usable[0]
         plan["pick"] = pick
@@ -3059,8 +3265,11 @@ def main():
             print("        Confirmed by two independent datasets.")
         elif pick.get("confirmed") is False:
             print("        Not in OpenStreetMap. Statutory register only. Ring ahead.")
+        if plan.get("unverified_hours"):
+            print("        Nobody published hours for this one. It may be shut.")
     else:
-        print("  PLAN: nothing confirmed open within range. Fuel before departure.")
+        print("  PLAN: nothing within range that is not known to be shut.")
+        print("        Fuel before departure.")
 
     if plan.get("verify"):
         print(f"\n  CROSS-CHECK: {plan['verify']}")
