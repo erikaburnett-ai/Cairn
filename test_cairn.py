@@ -853,7 +853,7 @@ class CheaperThanThis(unittest.TestCase):
 
 class WhatTimeIsItThere(unittest.TestCase):
     """This machine's clock is whatever room it is sitting in. Planning a
-    Portuguese run from a machine eight hours from the route checked Portuguese
+    Portuguese run from a machine eight hours away checked Portuguese
     opening hours against a clock eight hours out, and every shut station
     came back open."""
 
@@ -1030,23 +1030,35 @@ class LiveProviders(unittest.TestCase):
     def test_sweden_via_denmark(self): self.check(fr.p_swedish_via_denmark, 10)
 
     def test_every_registered_provider_answers(self):
-        """Eight of the seventeen had no live test at all, so a feed could
-        go dark and the suite stayed green. This walks the registry itself,
-        so a provider added later is covered without anybody remembering."""
+        """Walks the registry itself, so a provider added later is covered
+        without anybody remembering to write its test.
+
+        Two outcomes, deliberately separated. A source that cannot be
+        reached is the internet being the internet, and it is reported
+        without failing: it says nothing about this code. A source that
+        answers and then parses to nothing is a broken parser, and that
+        fails, because a silent empty list on a tool that reports road
+        closures is indistinguishable from an open road.
+        """
         import io, contextlib
-        dead = []
+        unreachable, broken = [], []
         for pr in fr.PROVIDERS:
             try:
                 with contextlib.redirect_stderr(io.StringIO()):
                     got = pr["fn"](set()) if pr.get("per_road") else pr["fn"]()
             except Exception as e:
-                dead.append(f"{pr['name']}: {str(e)[:60]}")
+                unreachable.append(f"{pr['name']}: {str(e)[:70]}")
                 continue
-            # Germany is queried per road and is handed no roads here, so
-            # an empty answer from it is correct.
+            # Germany is queried per road and is handed none here, so an
+            # empty answer from it is the correct answer.
             if not got and not pr.get("per_road"):
-                dead.append(f"{pr['name']}: returned nothing")
-        self.assertEqual(dead, [], "these feeds are down or changed: " + "; ".join(dead))
+                broken.append(f"{pr['name']}: answered, then parsed to nothing")
+        if unreachable:
+            print("\n  unreachable this run (not a failure): "
+                  + "; ".join(unreachable), file=sys.stderr)
+        self.assertEqual(broken, [],
+                         "these feeds answered and parsed to nothing, which means "
+                         "a parser is broken: " + "; ".join(broken))
 
     def test_france_register(self):
         rows = fr.load_france()

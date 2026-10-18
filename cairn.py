@@ -74,15 +74,33 @@ def get(url, tries=4, pause=3):
     raise RuntimeError(f"gave up after {tries} tries: {last}")
 
 
-def get_text(url, headers=None, ua=None):
-    """Same idea as get(), for feeds that answer in XML rather than JSON."""
-    cmd = ["curl", "-sL", "--max-time", "45", "-A", ua or BROWSER_UA]
+def get_text(url, headers=None, ua=None, allow_empty=False):
+    """Same idea as get(), for feeds that answer in XML or HTML.
+
+    This used to return "" when the fetch failed. Every scraped provider
+    then saw an empty string, found none of the markup it parses, and
+    returned an empty list, so an unreachable site reported "no incidents"
+    on a tool whose job is to say whether a road is shut. Nothing in the
+    world looks more like an open road than no data about it.
+
+    So a failed fetch raises. A provider's exception path then fires, the
+    health check records it, and the driver is told the source went quiet
+    instead of being told the road is clear. Pass allow_empty=True where a
+    genuinely empty body is a valid answer.
+    """
+    cmd = ["curl", "-sL", "--fail", "--max-time", "45", "-A", ua or BROWSER_UA]
     for k, v in (headers or {}).items():
         cmd += ["-H", f"{k}: {v}"]
+    host = urllib.parse.urlparse(url).netloc or url[:40]
     try:
-        return subprocess.run(cmd + [url], capture_output=True, text=True, timeout=60).stdout
-    except Exception:
-        return ""
+        r = subprocess.run(cmd + [url], capture_output=True, text=True, timeout=60)
+    except Exception as e:
+        raise RuntimeError(f"{host} did not answer: {str(e)[:60]}")
+    if r.returncode:
+        raise RuntimeError(f"{host} did not answer (curl exit {r.returncode})")
+    if not r.stdout.strip() and not allow_empty:
+        raise RuntimeError(f"{host} answered with an empty body")
+    return r.stdout
 
 
 # overpass.osm.ch was in this list and should never have been. It is a Swiss
@@ -534,6 +552,17 @@ SEVERITY = [
     ("equipmentorsystemfault", 3), ("signalfault", 3),
     ("abnormaltraffic", 3), ("queue", 3), ("congestion", 3), ("delay", 3),
 ]
+
+
+def clip(s, n):
+    """Truncate on a word boundary and say so. A hard slice cut "3rd of
+    August 2026" into "3rd of August 20", which reads as a broken date
+    rather than a shortened one, in the first block of the README."""
+    s = (s or "").strip()
+    if len(s) <= n:
+        return s
+    cut = s[:n].rsplit(" ", 1)[0]
+    return (cut or s[:n]) + "..."
 
 
 def _rank(kind):
@@ -2966,7 +2995,7 @@ def escape_routes(route, gh_url, samples=10, radius_miles=1.6):
 # This machine's clock is whatever room it is sitting in. The question this
 # tool answers is whether a forecourt in Spain will be open when you reach
 # it, and that is a question about Spanish time. Planning a Lisbon run from
-# a machine eight hours from the route checked Portuguese opening hours against a
+# a machine eight hours from the route checked Portuguese hours against a
 # clock eight hours out and called every shut station open.
 #
 # Boxes, in the same shape as the closure registry, because mapping a
@@ -3456,12 +3485,12 @@ def main():
         print(f"  LIVE ON YOUR ROUTE  ({len(plan['hits'])} on {where})")
         print("-" * 68)
         for i in plan["hits"][:8]:
-            print(f"  [{i['type'].upper()[:9]:9}] {i['title'][:46]}")
+            print(f"  [{i['type'].upper()[:9]:9}] {clip(i['title'], 46)}")
             bits = [b for b in (i.get("why"), i["direction"],
-                                f"since {i['start'][:16]}" if i["start"] else "") if b]
+                                f"since {i['start']}" if i["start"] else "") if b]
             print(f"              {'  |  '.join(bits)[:76]}")
             if i["desc"]:
-                print(f"              {i['desc'][:78]}")
+                print(f"              {clip(i['desc'], 78)}")
     elif not plan["incident_error"]:
         print("\n  Live incidents: nothing reported on your roads right now.")
 

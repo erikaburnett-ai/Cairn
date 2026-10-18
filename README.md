@@ -1,24 +1,24 @@
 ```
-
 ====================================================================
   G1 1AB  to  KW14 8AA
 ====================================================================
   Distance        277 miles
   Driving time    5.7 hours
-  Departing       Mon 19 Oct, 07:00  (London time)
-  Arriving        Mon 19 Oct, 12:44
+  Departing       Mon 21 Sep, 07:00  (London time)
+  Arriving        Mon 21 Sep, 12:44
 
   In the tank     60% of 55 L
   Usable          27.5 L down to your 10% reserve
+  That's          272 miles at 45 mpg (UK)
 
   VERDICT: you run to reserve 5 miles short.
   You need fuel by mile 272.
 
-  LIVE ON YOUR ROUTE  (10 on A8, A803, A9, B9154, M8, M80, M9)
+  LIVE ON YOUR ROUTE  (6 on A8, A803, A9, B9154, M8, M80, M9)
 --------------------------------------------------------------------
   [CLOSURE  ] A78 Dunlop Street to A8 Ratho Street
-              on A8  |  Both Directions  |  since 3rd of August 20
-              The A78 Dunlop Street to A8 Ratho Street is currently closed in both direction
+              on A8  |  Both Directions  |  since 3rd of August 2026, 5:51am
+              The A78 Dunlop Street to A8 Ratho Street is currently closed in both...
 
   REACHABLE STOPS, furthest first (89 within range)
 --------------------------------------------------------------------
@@ -26,7 +26,6 @@
   [OPEN  ] mile   223  ETA 11:38  Sutherland Arms Garage Ltd      £1.79/L E10    shuts 20:00
             toilets
   [OPEN  ] mile   208  ETA 11:18  Evelix Service Station          £1.80/L E10    shuts 20:00
-            toilets
 
   PLAN: fill at Brora Fuel Express Automat, mile 224, around 11:38.
         Ring ahead: +44345 602 9528
@@ -64,7 +63,7 @@ hours alone. Fuel Finder UK is the exception found so far: since 14 October
 2026 its route planner has estimated whether a station will be open when you
 arrive. So the hours are in use elsewhere. What has not turned up anywhere
 else is doing it offline, on hardware you own, alongside live closures from
-eighteen national road authorities.
+nineteen national road authorities.
 
 Measured on one 110-mile stretch of the A9:
 
@@ -80,7 +79,7 @@ Measured on one 110-mile stretch of the A9:
 | Range | works out where the tank hits your reserve |
 | Stops | every forecourt reachable before that, open at your arrival time |
 | Closures | live, from 19 national sources, matched to the roads you use |
-| Fuel data | five national registers: Britain, France, Spain, Portugal, Italy. 53,965 forecourts |
+| Fuel data | five national registers: Britain, France, Spain, Portugal, Italy. 53,964 forecourts |
 | Bank holidays | the statutory holiday timetable, per nation, where it differs |
 | Rerouting | locates a closure, blocks it, routes around it |
 | Diversion | the extra miles feed back into the fuel plan |
@@ -90,7 +89,7 @@ Measured on one 110-mile stretch of the A9:
 
 ## Install
 
-Python 3.8 or later. No dependencies.
+Python 3.9 or later, for `zoneinfo`. No dependencies.
 
 ```bash
 git clone https://github.com/YOURNAME/cairn
@@ -358,6 +357,7 @@ That second one reads OPEN on its weekday row.
 | Ireland | Transport Infrastructure Ireland | GraphQL behind their map |
 | Germany | autobahn.de | per road, no key |
 | France | Bison Fute | one file per event, no key |
+| Belgium | Flemish traffic centre, textual page | Flanders only, no key |
 | Austria | ASFINAG public RSS | no key |
 | Luxembourg | CITA | DATEX II v3.6, CC0 |
 | Slovenia | DARS | Atom feed, no key |
@@ -392,8 +392,9 @@ and those are open.
 Look for the public route before writing a country off.
 
 This is not a preference. Several National Access Points will only register
-a citizen or a company of their own member state. So "registration required" on a European feed means
-permanently shut here, and a country is covered through its public channels
+a citizen or a company of their own member state, so a feed behind one of
+those is treated as permanently unavailable, and a country is covered
+through its public channels
 or it is not covered. Every provider in the table above needs no account. That is a hard
 requirement here.
 
@@ -407,13 +408,13 @@ other two are just as open.
 
 | Country | Register | Forecourts | Hours | Prices |
 |---|---|---|---|---|
-| Great Britain | Fuel Finder, Motor Fuel Price (Open Data) Regulations 2025 | 8,138 | per day, plus a bank holiday row | 6 grades |
+| Great Britain | Fuel Finder (Motor Fuel Price (Open Data) Regulations 2025), read through [matthewgall's hourly archive](https://github.com/matthewgall/fuelfinder-archive) | 8,138 | per day, plus a bank holiday row | 6 grades |
 | France | prix-carburants, Licence Ouverte | 9,799 | per day, plus a 24-hour card flag | 5 grades |
 | Spain | MITECO, Real Decreto-ley 6/2000 | 11,429 | per day, lunch closings included | 11 grades |
 | Portugal | DGEG | 3,118 | weekday, Saturday, Sunday and a holiday row | 3 grades |
 | Italy | MIMIT, through a daily mirror | 21,481 | none published | 2 grades |
 
-32,485 forecourts with hours published by law, and 21,481 more in Italy
+32,484 forecourts with hours published by law, and 21,481 more in Italy
 with prices and no hours at all. Everywhere else still falls
 back to OpenStreetMap. That knows where the stations are. Three times in
 four it has no opening hours for them.
@@ -478,8 +479,8 @@ provider health check is what catches it when it does.
 
 ## What time is it there
 
-This was found on a machine whose clock sat eight hours from the route, planning a run from
-Lisbon. The tool read the machine's clock, got 17:48, checked Portuguese
+Found by planning a Lisbon run on a machine whose clock sat eight hours
+away. The tool read the machine's clock, got 17:48, checked Portuguese
 opening hours against it, and called every shut forecourt open. It was
 01:48 in Portugal.
 
@@ -518,8 +519,8 @@ data comes through a mirror and the closures come from the motorway operator.
 
 | | |
 |---|---|
-| Scraping | 7 of 17 providers read a web page or an undocumented API and will break on redesign |
-| Coverage | 12 EU member states of 27, plus the UK and Norway. Most of the rest put their feed behind an account |
+| Scraping | 8 of 19 providers read a web page or an undocumented API and will break on redesign |
+| Coverage | 14 EU member states of 27, plus the UK and Norway. Most of the rest put their feed behind an account |
 | Sweden | only the Skane roadworks Denmark relays. Trafikverket's own feed needs an account, and that door is shut for good |
 | Borders | road numbers repeat across countries, and bounding boxes overlap at the border |
 | Data errors | Forecourt Trader found every supermarket site in Fuel Finder mislabelled |
@@ -539,7 +540,7 @@ python3 test_cairn.py          # logic only, no network, instant
 python3 test_cairn.py --live   # also hits every live feed
 ```
 
-122 tests. The live ones break when a source changes its format, which is what
+131 tests. The live ones break when a source changes its format, which is what
 they are for. Several exist because of a bug that shipped: five feeds reported
 a coned-off lane as a shut road, two early returns swallowed the `--out` file
 without saying so, and cached incidents kept a severity judgement that had
