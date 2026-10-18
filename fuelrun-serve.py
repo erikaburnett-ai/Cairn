@@ -12,7 +12,10 @@ Standard library only. No pip install. Python 3.8 or later.
 
 Endpoints:
     /                  status page, readable on a phone
-    /live?roads=A9,A82 the car endpoint. Plain text, a few hundred bytes.
+    /live?roads=A9,A82&near=56.8,-3.9
+                       the car endpoint. Plain text, a few hundred bytes.
+                       near= is where you are, and without it an Austrian
+                       A9 answers a Scottish one.
     /plan?from=..&to=..&fuel=60     full plan as JSON
     /plan.html?from=..&to=..        the offline handout
     /health            JSON, for checking it's alive
@@ -38,6 +41,8 @@ from urllib.parse import urlparse, parse_qs
 
 sys.path.insert(0, str(__import__("pathlib").Path(__file__).parent))
 import fuelrun as fr
+
+REGISTERS = None          # set by --registers
 
 STATE = {
     "closures": [],
@@ -108,7 +113,7 @@ def poller(closure_mins, fuel_hours):
         try:
             poll_closures()
             if time.time() - last_fuel > fuel_hours * 3600:
-                poll_fuel()
+                poll_fuel(REGISTERS)
                 last_fuel = time.time()
         except Exception:
             traceback.print_exc()
@@ -164,6 +169,23 @@ class H(BaseHTTPRequestHandler):
             closures, at, err = list(STATE["closures"]), STATE["closures_at"], STATE["closures_error"]
         wanted = {r.strip().upper() for r in q.get("roads", "").split(",") if r.strip()}
         hits = [c for c in closures if (c["roads"] & wanted)] if wanted else closures
+
+        # A9 is a road in Scotland and a motorway in Austria, and asking
+        # for A9 got both: a Pyhrn Autobahn ramp closure handed to somebody
+        # driving past Blair Atholl. With no route to match against, the
+        # only thing this endpoint knows is where the car says it is.
+        near = q.get("near", "")
+        country = None
+        if near:
+            try:
+                la, lo = (float(x) for x in near.split(",")[:2])
+                keep = {pr["name"] for pr in fr.PROVIDERS
+                        if fr._inside(pr["box"], la, lo)
+                        and not (pr.get("not_box") and fr._inside(pr["not_box"], la, lo))}
+                hits = [c for c in hits if c["source"] in keep]
+                country = ", ".join(sorted(keep)) or None
+            except (ValueError, TypeError):
+                pass
         hits.sort(key=lambda c: c["rank"])
 
         lines = [f"{at:%H:%M} {'(stale)' if at and (datetime.now() - at).seconds > 1800 else ''}".strip()]
@@ -171,9 +193,13 @@ class H(BaseHTTPRequestHandler):
             lines.append(f"! {err[:60]}")
         if not hits:
             lines.append("clear" + (f" on {','.join(sorted(wanted))}" if wanted else ""))
+        if wanted and not near:
+            # Say whose A9 each one is, since nothing here can tell.
+            lines.append("no position given, so every country's roads match")
         for c in hits[:10]:
             road = ",".join(sorted(c["roads"])) or "?"
-            lines.append(f"{c['type'][:9].upper():9} {road:9} {c['title'][:34]}")
+            who = "" if near else f" [{c['source'][:11]}]"
+            lines.append(f"{c['type'][:9].upper():9} {road:9}{who} {c['title'][:34]}")
             if c["rank"] <= 1 and c["desc"]:
                 lines.append(f"          {c['desc'][:60]}")
         return "\n".join(lines) + "\n"
@@ -245,7 +271,7 @@ closures updated {h['closures_updated'] or 'never'}
 {''.join(f"<div class=hw>{n}: returning {v['last']}, normally about {v['best']}</div>" for n, v in (h.get('provider_health') or {}).items() if v.get('best', 0) >= 3 and (v.get('last') or 0) == 0)}
 <table>{rows}</table>
 <div class=e>
-<code>/live?roads=A9,A82</code> plain text for the car<br>
+<code>/live?roads=A9,A82&amp;near=56.8,-3.9</code> plain text for the car<br>
 <code>/plan?from=G1+1AB&amp;to=KW14+8AA&amp;fuel=60</code> JSON<br>
 <code>/plan.html?from=...&amp;to=...</code> the offline handout<br>
 <code>/health</code> JSON
@@ -271,8 +297,10 @@ def main():
 
     if a.osrm:
         fr.OSRM_BASE = a.osrm.rstrip("/")
-    global GH_URL
+    global GH_URL, REGISTERS
     GH_URL = a.gh
+    REGISTERS = ({x.strip() for x in a.registers.split(",") if x.strip()}
+                 if a.registers else None)
     # route() reads the module-level GH_BASE, so a served plan routed through
     # the public OSRM even with a local GraphHopper sitting right there.
     fr.GH_BASE = a.gh.rstrip("/") if a.gh else None
@@ -287,7 +315,7 @@ def main():
         print("  or WireGuard. Do not expose it to the open internet.")
     print("\n  Warming up...")
 
-    poll_fuel()
+    poll_fuel(REGISTERS)
     poll_closures()
     with LOCK:
         print(f"  {STATE['fuel_count']} forecourts, {len(STATE['closures'])} live incidents")

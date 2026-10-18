@@ -224,7 +224,7 @@ python3 fuelrun-serve.py --bind 0.0.0.0 --osrm http://localhost:8989 --gh http:/
 
 | Endpoint | |
 |---|---|
-| `/live?roads=A9,A82` | 229 bytes of plain text. Loads on one bar. |
+| `/live?roads=A9,A82&near=56.8,-3.9` | 229 bytes of plain text. Loads on one bar. |
 | `/plan?from=..&to=..&fuel=60` | JSON |
 | `/plan.html?from=..&to=..` | the offline page |
 | `/health` | uptime, poll times, per-provider health, rerouting state |
