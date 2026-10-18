@@ -542,7 +542,7 @@ Standard library only, in both files. Read `CLA.md` and add your line to
 
 ## Credits
 
-Written by Erika Burnett, with Claude as a pair.
+Written by Erika Burnett.
 
 Data keeps its own terms and its own credit. See the Sources table above.
 
