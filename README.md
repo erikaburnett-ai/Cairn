@@ -295,8 +295,10 @@ carries `left_this_machine`, so an agent acting for somebody can report what
 the answer cost them in privacy.
 
 It also attaches as an upstream to a gateway such as
-[ToolFunnel](https://github.com/Rendeverance/toolfunnel), which is
-worth having if you run many tools behind one policy. Cairn does not need
+[ToolFunnel](https://github.com/Rendeverance/toolfunnel). That is worth
+having if you run many tools behind one policy. Its gate fires your own
+PreToolUse and PostToolUse hooks inside the gateway, so a rule travels
+between clients instead of living in one CLI's config, and it fails closed. Cairn does not need
 one, and keeping it that way is deliberate: a dependency on a gateway would
 end the no-dependencies promise above.
 
@@ -569,6 +571,16 @@ Standard library only, in both files. Read `CLA.md` and add your line to
 ## Credits
 
 Written by Erika Burnett.
+
+The MCP server exists because [Rendeverance](https://github.com/Rendeverance)
+said it should. He builds
+[ToolFunnel](https://github.com/Rendeverance/toolfunnel), an MCP gateway with
+no runtime dependencies at all, where the JSON-RPC is hand-rolled on Node
+builtins because a thing that gates tool execution is the wrong place for an
+unaudited dependency tree. It also fixes a problem Cairn does not have and
+most setups do: every connected server dumps its full tool schemas into the
+model's context every turn, so ToolFunnel serves short briefs and fetches the
+rest on demand.
 
 Data keeps its own terms and its own credit. See the Sources table above.
 
